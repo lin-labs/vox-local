@@ -1,0 +1,454 @@
+#!/usr/bin/env python3
+"""ckb — concierge knowledge base CLI.
+
+Shared access layer for the hackathon concierge stack:
+  - hidden-gem knowledge base   (kb/gems/<city>/<id>.md)
+  - customer user profiles      (kb/profiles/<account>.md)
+
+Design constraints:
+  - stdlib only (no venv needed — callable from voxcall subprocesses,
+    puffo channel agents, and shell scripts alike)
+  - every read command prints JSON to stdout (machine-first)
+  - the markdown files are the source of truth; this CLI is just a view/edit
+    layer, so humans and agents can also edit the files directly.
+
+Root resolution: $CKB_ROOT, else <script>/../kb.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+try:
+    from zoneinfo import ZoneInfo
+
+    _PT = ZoneInfo("America/Los_Angeles")
+except Exception:  # pragma: no cover - zoneinfo present on py3.9+
+    _PT = None
+
+
+def kb_root() -> Path:
+    env = os.environ.get("CKB_ROOT")
+    if env:
+        return Path(env)
+    return Path(__file__).resolve().parent.parent / "kb"
+
+
+# --------------------------------------------------------------------------
+# frontmatter (deliberately tiny: flat `key: value` and `key: [a, b]` only)
+# --------------------------------------------------------------------------
+
+def parse_doc(text: str) -> tuple[dict, str]:
+    """Split a markdown doc into (frontmatter dict, body)."""
+    meta: dict = {}
+    body = text
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            for line in text[4:end].splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or ":" not in line:
+                    continue
+                key, _, val = line.partition(":")
+                meta[key.strip()] = _parse_value(val.strip())
+            body = text[end + 5 :].lstrip("\n")
+    return meta, body
+
+
+def _parse_value(val: str):
+    if val.startswith("[") and val.endswith("]"):
+        inner = val[1:-1].strip()
+        if not inner:
+            return []
+        return [v.strip().strip("\"'") for v in inner.split(",")]
+    return val.strip("\"'")
+
+
+def dump_doc(meta: dict, body: str) -> str:
+    lines = ["---"]
+    for k, v in meta.items():
+        if isinstance(v, list):
+            lines.append(f"{k}: [{', '.join(str(x) for x in v)}]")
+        else:
+            lines.append(f"{k}: {v}")
+    lines.append("---")
+    return "\n".join(lines) + "\n\n" + body.strip() + "\n"
+
+
+def sections(body: str) -> dict:
+    """Split body into {'_pitch': first paragraph, '<heading>': text, ...}."""
+    out: dict = {}
+    current = "_pitch"
+    buf: list[str] = []
+    for line in body.splitlines():
+        m = re.match(r"^##\s+(.*)", line)
+        if m:
+            out[current] = "\n".join(buf).strip()
+            current = m.group(1).strip().lower()
+            buf = []
+        else:
+            buf.append(line)
+    out[current] = "\n".join(buf).strip()
+    return {k: v for k, v in out.items() if v}
+
+
+def now_pt() -> str:
+    dt = datetime.now(_PT) if _PT else datetime.now()
+    return dt.strftime("%Y-%m-%d %H:%M PT")
+
+
+def today() -> str:
+    dt = datetime.now(_PT) if _PT else datetime.now()
+    return dt.strftime("%Y-%m-%d")
+
+
+def _digits(number: str) -> str:
+    return re.sub(r"\D", "", number or "")
+
+
+# --------------------------------------------------------------------------
+# gems
+# --------------------------------------------------------------------------
+
+def load_gems(root: Path) -> list[dict]:
+    gems = []
+    gems_dir = root / "gems"
+    if not gems_dir.is_dir():
+        return gems
+    for p in sorted(gems_dir.rglob("*.md")):
+        meta, body = parse_doc(p.read_text())
+        if "id" not in meta:
+            continue
+        secs = sections(body)
+        gems.append({**meta, "pitch": secs.get("_pitch", ""), "sections": secs, "_path": str(p)})
+    return gems
+
+
+def gem_public(g: dict, full: bool = False) -> dict:
+    out = {k: v for k, v in g.items() if not k.startswith("_") and k != "sections"}
+    if full:
+        out["sections"] = {k: v for k, v in g["sections"].items() if k != "_pitch"}
+    return out
+
+
+def cmd_gems_search(args) -> int:
+    gems = load_gems(kb_root())
+    tokens = [t.lower() for t in re.split(r"\W+", args.q or "") if t]
+    want_tags = [t.lower() for t in (args.tag or [])]
+    results = []
+    for g in gems:
+        if args.city and str(g.get("city", "")).lower() != args.city.lower():
+            continue
+        tags = [str(t).lower() for t in g.get("tags", [])]
+        if want_tags and not all(t in tags for t in want_tags):
+            continue
+        score = 1  # base: passed the filters
+        hay_name = str(g.get("name", "")).lower()
+        hay_body = (g["pitch"] + " " + " ".join(g["sections"].values())).lower()
+        for tok in tokens:
+            if tok in tags:
+                score += 3
+            if tok in hay_name:
+                score += 2
+            if tok in hay_body:
+                score += 1
+        if tokens and score == 1:
+            continue
+        results.append((score, g))
+    results.sort(key=lambda sg: (-sg[0], sg[1].get("id", "")))
+    out = [gem_public(g, full=args.full) for _, g in results[: args.limit]]
+    print(json.dumps({"count": len(out), "gems": out}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_gems_get(args) -> int:
+    for g in load_gems(kb_root()):
+        if g.get("id") == args.id:
+            print(json.dumps(gem_public(g, full=True), ensure_ascii=False, indent=2))
+            return 0
+    print(json.dumps({"error": f"no gem with id '{args.id}'"}))
+    return 1
+
+
+def cmd_gems_add(args) -> int:
+    root = kb_root()
+    gid = args.id or re.sub(r"[^a-z0-9]+", "-", f"{args.city}-{args.name}".lower()).strip("-")
+    path = root / "gems" / args.city.lower() / f"{gid}.md"
+    if path.exists() and not args.force:
+        print(json.dumps({"error": f"gem '{gid}' already exists (use --force to overwrite)"}))
+        return 1
+    meta = {
+        "id": gid,
+        "name": args.name,
+        "city": args.city.lower(),
+        "area": args.area or "",
+        "tags": [t.strip() for t in (args.tags or "").split(",") if t.strip()],
+        "price": args.price or "",
+        "phone": args.phone or "",
+        "booking": args.booking or "walk-in",
+        "source": args.source or "agent",
+        "updated": today(),
+    }
+    body = args.pitch or f"{args.name} in {args.city}."
+    if args.details:
+        body += f"\n\n## Details\n{args.details}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(dump_doc(meta, body))
+    print(json.dumps({"ok": True, "id": gid, "path": str(path)}))
+    return 0
+
+
+# --------------------------------------------------------------------------
+# profiles
+# --------------------------------------------------------------------------
+
+def profile_path(root: Path, key: str) -> Path | None:
+    """Resolve KEY (account number or phone number) to a profile file."""
+    direct = root / "profiles" / f"{key}.md"
+    if direct.exists():
+        return direct
+    want = _digits(key)
+    if not want:
+        return None
+    for p in sorted((root / "profiles").glob("*.md")):
+        meta, _ = parse_doc(p.read_text())
+        phones = meta.get("phones", [])
+        if isinstance(phones, str):
+            phones = [phones]
+        if any(_digits(ph) == want for ph in phones):
+            return p
+    return None
+
+
+def load_profile(key: str) -> dict | None:
+    p = profile_path(kb_root(), key)
+    if p is None:
+        return None
+    meta, body = parse_doc(p.read_text())
+    return {**meta, "sections": sections(body), "_path": str(p)}
+
+
+def cmd_profile_get(args) -> int:
+    prof = load_profile(args.key)
+    if prof is None:
+        print(json.dumps({"error": f"no profile for '{args.key}'"}))
+        return 1
+    out = {k: v for k, v in prof.items() if not k.startswith("_")}
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_profile_brief(args) -> int:
+    """Compact plaintext brief — inject at call start so there is no cold start."""
+    prof = load_profile(args.key)
+    if prof is None:
+        print(json.dumps({"error": f"no profile for '{args.key}'"}))
+        return 1
+    secs = prof["sections"]
+    lines = [
+        f"Caller: {prof.get('name', '?')} (account {prof.get('account', '?')},"
+        f" tier {prof.get('tier', 'standard')}, home {prof.get('home_city', '?')},"
+        f" languages {', '.join(prof.get('languages', ['en']))})"
+    ]
+    for head in ("preferences", "constraints & emergency", "trip history"):
+        if head in secs:
+            lines.append(f"{head.title()}:\n{secs[head]}")
+    notes = secs.get("notes", "")
+    if notes:
+        bullets = [l for l in notes.splitlines() if l.strip().startswith("-")]
+        if bullets:
+            lines.append("Recent notes:\n" + "\n".join(bullets[-3:]))
+    print(json.dumps({"account": prof.get("account"), "brief": "\n\n".join(lines)}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_profile_note(args) -> int:
+    root = kb_root()
+    p = profile_path(root, args.key)
+    if p is None:
+        print(json.dumps({"error": f"no profile for '{args.key}'"}))
+        return 1
+    text = p.read_text().rstrip() + "\n"
+    entry = f"- {now_pt()}: {args.text}\n"
+    if "## Notes" in text:
+        text += entry
+    else:
+        text += f"\n## Notes\n{entry}"
+    meta, body = parse_doc(text)
+    meta["updated"] = today()
+    p.write_text(dump_doc(meta, body))
+    print(json.dumps({"ok": True, "profile": str(p), "note": entry.strip()}))
+    return 0
+
+
+def cmd_profile_upsert(args) -> int:
+    root = kb_root()
+    p = profile_path(root, args.key) or (root / "profiles" / f"{args.key}.md")
+    if p.exists():
+        meta, body = parse_doc(p.read_text())
+    else:
+        meta, body = {"account": args.key}, "## Preferences\n\n## Constraints & Emergency\n\n## Trip History\n\n## Notes\n"
+    for kv in args.set or []:
+        k, _, v = kv.partition("=")
+        meta[k.strip()] = _parse_value(v.strip())
+    meta["updated"] = today()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(dump_doc(meta, body))
+    print(json.dumps({"ok": True, "profile": str(p), "meta": {k: v for k, v in meta.items()}}, ensure_ascii=False))
+    return 0
+
+
+# --------------------------------------------------------------------------
+# voxcall tool schemas
+# --------------------------------------------------------------------------
+
+TOOLS = [
+    {
+        "type": "function",
+        "name": "search_hidden_gems",
+        "description": (
+            "Search the concierge's curated hidden-gem knowledge base (restaurants, onsen, "
+            "bars, shops, experiences the guidebooks miss). Use whenever the caller asks for "
+            "recommendations or you want to proactively suggest something local. Returns JSON "
+            "with a short voice-ready pitch per gem."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "City slug, e.g. 'kobe', 'kyoto', 'arima', 'osaka'"},
+                "query": {"type": "string", "description": "Free-text interests, e.g. 'quiet coffee', 'wagyu dinner'"},
+                "tags": {"type": "string", "description": "Comma-separated tags that MUST all match, e.g. 'food,dinner'"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "type": "function",
+        "name": "get_hidden_gem",
+        "description": "Fetch the full detail of one hidden gem by id (hours, phone, booking method, insider notes). Use before booking it or answering follow-up questions.",
+        "parameters": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "description": "Gem id from search_hidden_gems"}},
+            "required": ["id"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "get_caller_brief",
+        "description": (
+            "Load the caller's concierge profile brief (preferences, constraints, allergies, "
+            "emergency contacts, trip history, recent notes). Call ONCE right after the caller "
+            "is authenticated so you never start cold. Key = account number or phone number."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"key": {"type": "string", "description": "Account number or E.164 phone"}},
+            "required": ["key"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "remember_about_caller",
+        "description": (
+            "Append one durable fact you learned about the caller to their profile (a new "
+            "preference, allergy, travel plan, dislike). Use it during the call the moment you "
+            "learn something worth keeping — short single sentences."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "Account number or phone"},
+                "note": {"type": "string", "description": "One-sentence fact, e.g. 'Vegetarian; avoid kaiseki with fish stock.'"},
+            },
+            "required": ["key", "note"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "add_hidden_gem",
+        "description": "Save a NEW hidden gem the caller told you about into the shared knowledge base so every future caller benefits.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "city": {"type": "string"},
+                "pitch": {"type": "string", "description": "One-sentence voice-ready description"},
+                "tags": {"type": "string", "description": "Comma-separated"},
+            },
+            "required": ["name", "city", "pitch"],
+        },
+    },
+]
+
+
+def cmd_tools_schema(_args) -> int:
+    print(json.dumps(TOOLS, ensure_ascii=False, indent=2))
+    return 0
+
+
+# --------------------------------------------------------------------------
+# main
+# --------------------------------------------------------------------------
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="ckb", description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    gems = sub.add_parser("gems", help="hidden-gem knowledge base").add_subparsers(dest="sub", required=True)
+    s = gems.add_parser("search", help="search gems (JSON out)")
+    s.add_argument("--city")
+    s.add_argument("--tag", action="append", help="repeatable; all must match")
+    s.add_argument("--q", help="free-text query")
+    s.add_argument("--limit", type=int, default=5)
+    s.add_argument("--full", action="store_true", help="include detail sections")
+    s.set_defaults(fn=cmd_gems_search)
+    g = gems.add_parser("get", help="one gem, full detail")
+    g.add_argument("id")
+    g.set_defaults(fn=cmd_gems_get)
+    a = gems.add_parser("add", help="add a gem")
+    a.add_argument("--id")
+    a.add_argument("--name", required=True)
+    a.add_argument("--city", required=True)
+    a.add_argument("--area")
+    a.add_argument("--tags", help="comma-separated")
+    a.add_argument("--price")
+    a.add_argument("--phone")
+    a.add_argument("--booking", help="walk-in | phone | online | via-hotel")
+    a.add_argument("--pitch", help="one-sentence voice-ready description")
+    a.add_argument("--details")
+    a.add_argument("--source")
+    a.add_argument("--force", action="store_true")
+    a.set_defaults(fn=cmd_gems_add)
+
+    prof = sub.add_parser("profile", help="customer profiles").add_subparsers(dest="sub", required=True)
+    pg = prof.add_parser("get", help="full profile (JSON)")
+    pg.add_argument("key", help="account number or phone")
+    pg.set_defaults(fn=cmd_profile_get)
+    pb = prof.add_parser("brief", help="compact call-start brief")
+    pb.add_argument("key")
+    pb.set_defaults(fn=cmd_profile_brief)
+    pn = prof.add_parser("note", help="append a timestamped note")
+    pn.add_argument("key")
+    pn.add_argument("text")
+    pn.set_defaults(fn=cmd_profile_note)
+    pu = prof.add_parser("upsert", help="create/update profile frontmatter")
+    pu.add_argument("key")
+    pu.add_argument("--set", action="append", metavar="KEY=VALUE")
+    pu.set_defaults(fn=cmd_profile_upsert)
+
+    tools = sub.add_parser("tools", help="integration schemas").add_subparsers(dest="sub", required=True)
+    ts = tools.add_parser("schema", help="voxcall/xai realtime tool schemas (JSON)")
+    ts.set_defaults(fn=cmd_tools_schema)
+
+    args = ap.parse_args(argv)
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
