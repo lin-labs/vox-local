@@ -30,7 +30,7 @@ integrations/voxcall.md    # how to wire the five tools into the voxcall brain
 ## Quickstart
 
 ```bash
-CKB=/home/blin/Experiments/voice/concierge-kb/bin/ckb
+CKB="$(git rev-parse --show-toplevel)/bin/ckb"   # from inside the checkout
 
 $CKB gems search --city kobe --q "wagyu dinner"      # ranked JSON results
 $CKB gems get kobe-yazawa-teppan                     # full detail incl. insider notes
@@ -45,7 +45,8 @@ $CKB tools schema                  # xai-realtime tool JSON for voxcall
 ```
 
 No dependencies — plain `python3`. Set `CKB_ROOT` to point at an alternate
-`kb/` directory (tests, staging).
+`kb/` directory (tests, staging); consumers outside the checkout set
+`CKB_REPO` to wherever they cloned this repo.
 
 ## Conventions
 

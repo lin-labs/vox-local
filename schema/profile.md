@@ -1,8 +1,8 @@
 # Profile schema — `kb/profiles/<account>.md`
 
-Keyed by **voxcall account number** (the same key as
-`~/data/Projects/voxcall/accounts/<account>.json`). `phones` lets `ckb` resolve
-a caller-ID to the profile.
+Keyed by **voxcall account number** (the same key as the voxcall deployment's
+account store, `$VOXCALL_STATE_DIR/accounts/<account>.json`). `phones` lets
+`ckb` resolve a caller-ID to the profile.
 
 ## Frontmatter
 

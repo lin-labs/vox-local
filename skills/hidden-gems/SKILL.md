@@ -5,13 +5,23 @@ description: Query and maintain the shared concierge knowledge base — hidden-g
 
 # Hidden Gems & Guest Profiles
 
-The shared memory for the concierge stack lives at
-`/home/blin/Experiments/voice/concierge-kb` (env override: `CKB_ROOT` points at
-its `kb/` dir). Use the `ckb` CLI — stdlib python3, JSON on stdout:
+## Locate the knowledge base (do this first)
+
+This skill ships inside the `concierge-kb` repo at `skills/hidden-gems/`, so
+the repo root is **two directories above this SKILL.md** — resolve symlinks,
+since agent homes often symlink skill directories:
 
 ```bash
-CKB=/home/blin/Experiments/voice/concierge-kb/bin/ckb
+# <skill-dir> = the base directory of this skill (your harness tells you this)
+CKB_REPO="${CKB_REPO:-$(cd "$(dirname "$(readlink -f "<skill-dir>/SKILL.md")")/../.." && pwd)}"
+CKB="$CKB_REPO/bin/ckb"
 ```
+
+Overrides: `$CKB_REPO` points at an alternate checkout; `$CKB_ROOT` points the
+CLI at an alternate `kb/` data directory. If resolution fails, clone
+`https://github.com/lin-labs/concierge-kb` and set `CKB_REPO`.
+
+`ckb` is stdlib-only `python3`, JSON on stdout — no venv or install step.
 
 ## Before fulfilling any booking request
 
@@ -45,7 +55,10 @@ CKB=/home/blin/Experiments/voice/concierge-kb/bin/ckb
   $CKB gems add --name "..." --city kyoto --pitch "one speakable sentence" \
       --tags food,quiet --booking phone --phone +81... --source caller
   ```
-- **Commit** in the repo: `git -C /home/blin/Experiments/voice/concierge-kb add -A && git -C ... commit -m "..."`.
+- **Commit and push** so other machines and agents see it:
+  ```bash
+  git -C "$CKB_REPO" add -A && git -C "$CKB_REPO" commit -m "kb: ..." && git -C "$CKB_REPO" push
+  ```
 
 ## Privacy
 

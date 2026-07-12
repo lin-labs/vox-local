@@ -6,7 +6,7 @@ only, no venv). Schemas are already in the exact flat format `XaiBrain`
 expects (`{"type": "function", "name", "description", "parameters"}`):
 
 ```bash
-/home/blin/Experiments/voice/concierge-kb/bin/ckb tools schema
+"$CKB_REPO/bin/ckb" tools schema   # CKB_REPO = wherever this repo is checked out
 ```
 
 | Tool | ckb command | When the brain calls it |
@@ -20,9 +20,13 @@ expects (`{"type": "function", "name", "description", "parameters"}`):
 ## Suggested wiring (mirrors `booking/puffo.py` subprocess style)
 
 ```python
-import asyncio, json
+import asyncio, json, os, shutil
 
-CKB = "/home/blin/Experiments/voice/concierge-kb/bin/ckb"
+# Point CKB_BIN (or CKB_REPO) at the concierge-kb checkout — no hardcoded paths.
+CKB = (os.environ.get("CKB_BIN")
+       or (os.environ.get("CKB_REPO") and os.path.join(os.environ["CKB_REPO"], "bin", "ckb"))
+       or shutil.which("ckb"))
+assert CKB, "set CKB_BIN or CKB_REPO, or put ckb on PATH"
 
 async def _ckb(*argv: str) -> str:
     proc = await asyncio.create_subprocess_exec(
