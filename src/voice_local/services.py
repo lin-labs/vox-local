@@ -17,6 +17,7 @@ layer up in mcp_server, where the pending-update queue lives).
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import json
 import logging
@@ -144,6 +145,9 @@ class CallServices:
         return "\n".join(parts) or "ok"
 
     async def close(self) -> None:
+        task = getattr(self, "_context_task", None)
+        if task is not None:
+            task.cancel()
         if self.booking is not None:
             await self.booking.close()
 
@@ -268,13 +272,29 @@ class CallServices:
             space_id=self._space_id, fulfiller_slug=self._fulfiller)
 
     async def _send_caller_context(self, account: Account, channel_id: str) -> None:
+        """The profile brief goes out IMMEDIATELY (same reply as the verify result);
+        the trip parse — a whole-channel LLM read that grows with channel history —
+        runs detached and rides a LATER reply via the pending queue. Blocking verify
+        on it once exceeded VB's tool timeout and deadlocked a live call."""
         brief = kb.profile_brief(self._conn, account.account_number)
-        trip_summary = ""
-        if self._grok is not None and self._puffo is not None and channel_id:
-            client, _listener = self._puffo
-            trip_summary = trip_context_text(
-                await load_trip_context(client, channel_id, self._grok))
-        await self._send("caller_context", {"brief": brief, "trip_summary": trip_summary})
+        await self._send("caller_context", {"brief": brief, "trip_summary": ""})
+        if self._grok is None or self._puffo is None or not channel_id:
+            return
+        client, _listener = self._puffo
+        send = self._send   # bind the OUTER send: the per-query capture is long gone
+                            # by the time the parse lands
+
+        async def parse() -> None:
+            try:
+                trip = trip_context_text(
+                    await load_trip_context(client, channel_id, self._grok))
+            except Exception:  # noqa: BLE001 - context is a bonus, never a failure
+                log.exception("trip-context parse failed")
+                return
+            if trip:
+                await send("caller_context", {"brief": "", "trip_summary": trip})
+
+        self._context_task = asyncio.create_task(parse(), name="trip-context")
 
     def _start_booking(self, account: Account, channel_id: str = "") -> None:
         if self._puffo is None:
