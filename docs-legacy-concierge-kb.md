@@ -10,7 +10,7 @@ Very different consumers read and write the same files:
 | Consumer | How it accesses |
 |---|---|
 | **voxcall** (inbound voice agent) | Realtime tool calls → subprocess `bin/ckb ... ` (JSON out), or HTTP `POST /call` against `ckb serve`. Tool schemas: `ckb tools schema` / `GET /tools/schema` |
-| **Puffo channel agents** (claude/codex booking agents) | The [`skills/hidden-gems`](skills/hidden-gems/SKILL.md) skill wraps the same CLI; MCP-native agents use `POST /mcp`; they may also edit the markdown directly |
+| **Puffo channel agents** (claude/codex booking agents) | The [`skills/local-guide`](skills/local-guide/SKILL.md) skill (renamed from hidden-gems) wraps the same CLI; MCP-native agents use `POST /mcp`; they may also edit the markdown directly |
 | **Puffo chat messages** (any human/bot in a channel) | `ckb: search kobe onsen` → [`bin/ckb-puffo-bridge`](bin/ckb-puffo-bridge) → `POST /call` → threaded `[ckb]` reply |
 
 The served surface (webhook `/call`, MCP `/mcp`, chat bridge) is one daemon —
@@ -29,7 +29,7 @@ kb/
 bin/ckb                    # stdlib-only Python CLI + `ckb serve` (HTTP /call + MCP /mcp)
 bin/ckb-puffo-bridge       # Puffo listener: `ckb: ...` chat messages -> POST /call
 schema/                    # field documentation for gems and profiles
-skills/hidden-gems/        # skill for Puffo channel agents
+skills/local-guide/        # skill for Puffo channel agents
 integrations/voxcall.md    # how to wire the five tools into the voxcall brain
 integrations/server.md     # the served surface: webhook, MCP, chat bridge, ops
 ```

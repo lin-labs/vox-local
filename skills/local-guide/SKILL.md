@@ -1,13 +1,13 @@
 ---
-name: hidden-gems
+name: local-guide
 description: Query and maintain the shared concierge knowledge base — hidden-gem travel recommendations and customer profiles — when handling a booking request in a Puffo channel, recommending restaurants/onsen/experiences, looking up a guest's preferences or emergency constraints, or recording something learned about a guest. Trigger on booking threads, "recommend", "any good spots in <city>", guest names/account numbers, or dietary/emergency questions.
 ---
 
-# Hidden Gems & Guest Profiles
+# Local Guide — Hidden Gems & Guest Profiles
 
 ## Locate the knowledge base (do this first)
 
-This skill ships inside the `concierge-kb` repo at `skills/hidden-gems/`, so
+This skill ships inside the `voice-local` repo at `skills/local-guide/`, so
 the repo root is **two directories above this SKILL.md** — resolve symlinks,
 since agent homes often symlink skill directories:
 

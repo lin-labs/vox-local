@@ -73,5 +73,5 @@ existing `on_tool` dispatcher. Consider adding `remember_about_caller` to
   the caller, store it with remember_about_caller immediately."*
 - Booking handoff unchanged: once a gem with `booking: phone`/`via-hotel` is
   chosen, file the request into the Puffo thread exactly as today
-  (`booking/puffo.py`); the channel agent uses the `hidden-gems` skill in this
+  (`booking/puffo.py`); the channel agent uses the `local-guide` skill in this
   repo to see the same gem/profile data.
