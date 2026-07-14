@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font: 13px/1.4 system-ui, sans-serif; width: 320px; margin: 0; padding: 12px;
+           background: #fafaf7; color: #1a1a18; }
+    h1 { font-size: 14px; margin: 0 0 10px; }
+    label { display: block; font-weight: 600; margin: 8px 0 2px; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 5px 6px;
+           border: 1px solid #c8c6bd; border-radius: 5px; font: inherit; background: #fff; }
+    textarea { resize: vertical; min-height: 52px; }
+    .row { display: flex; gap: 8px; }
+    .row > div { flex: 1; }
+    button { margin-top: 12px; width: 100%; padding: 7px; border: 0; border-radius: 6px;
+           background: #2e5e46; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: default; }
+    #status { margin-top: 8px; min-height: 18px; font-size: 12px; }
+    #status.ok { color: #2e5e46; } #status.err { color: #a03426; }
+    a { color: #2e5e46; }
+  </style>
+</head>
+<body>
+  <h1>Add a hidden gem</h1>
+  <label for="name">Name</label>
+  <input id="name" placeholder="Kin no Yu">
+  <div class="row">
+    <div>
+      <label for="city">City</label>
+      <input id="city" placeholder="kobe">
+    </div>
+    <div>
+      <label for="tags">Tags</label>
+      <input id="tags" placeholder="onsen, quiet, morning">
+    </div>
+  </div>
+  <label for="pitch">Pitch <span style="font-weight:400">(the one-breath sell)</span></label>
+  <textarea id="pitch" placeholder="Why a local would send a friend here…"></textarea>
+  <label for="details">Details <span style="font-weight:400">(hours, budget, insider)</span></label>
+  <textarea id="details"></textarea>
+  <button id="save">Save to gems</button>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

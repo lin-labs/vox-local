@@ -1,0 +1,40 @@
+# voice-local — lab-service verbs (systemd-supervised; see blin-lab-service).
+
+SHELL := /bin/bash
+UNIT := voice-local.service
+NGROK_UNIT := voice-local-ngrok.service
+
+.PHONY: serve test start stop restart status logs tail release deploy push-gems
+
+serve:
+	uv run voice-local serve
+
+test:
+	uv run pytest tests -q
+
+start:
+	systemctl --user start $(UNIT) $(NGROK_UNIT)
+
+stop:
+	systemctl --user stop $(UNIT) $(NGROK_UNIT)
+
+restart:
+	systemctl --user restart $(UNIT)
+
+status:
+	systemctl --user status $(UNIT) $(NGROK_UNIT) --no-pager | head -30
+
+logs:
+	journalctl --user -u $(UNIT) --no-pager | less +G
+
+tail:
+	journalctl --user -u $(UNIT) -f
+
+release:
+	uv sync && uv run pytest tests -q && systemctl --user restart $(UNIT)
+
+deploy:
+	ssh labs 'cd ~/Experiments/voice/voice-local && git pull --ff-only && make release'
+
+push-gems:
+	git add data/gems.db && git commit -m "gems: data bag update" && git push

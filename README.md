@@ -1,69 +1,90 @@
-# concierge-kb
+# voice-local
 
-Shared knowledge layer for the voice-concierge hackathon stack: a **hidden-gem
-knowledge base** (travel/local recommendations the guidebooks miss) and
-**customer profiles** (preferences, constraints, emergency info, trip history —
-so no interaction ever starts cold).
+**Local knowledge, spoken.** voice-local is the backend brain for a
+[Vocal Bridge](https://vocalbridgeai.com) phone concierge: callers dial the
+agent's number, Vocal Bridge owns the audio, and its background AI reaches this
+service over **MCP** for everything that has to be real — identity, memory,
+local knowledge, and human-coordinated bookings.
 
-Very different consumers read and write the same files:
+Pivoted from `concierge-kb` (2026-07-14): same knowledge, better body.
+The legacy markdown-era docs live in
+[docs-legacy-concierge-kb.md](docs-legacy-concierge-kb.md).
 
-| Consumer | How it accesses |
-|---|---|
-| **voxcall** (inbound voice agent) | Realtime tool calls → subprocess `bin/ckb ... ` (JSON out), or HTTP `POST /call` against `ckb serve`. Tool schemas: `ckb tools schema` / `GET /tools/schema` |
-| **Puffo channel agents** (claude/codex booking agents) | The [`skills/hidden-gems`](skills/hidden-gems/SKILL.md) skill wraps the same CLI; MCP-native agents use `POST /mcp`; they may also edit the markdown directly |
-| **Puffo chat messages** (any human/bot in a channel) | `ckb: search kobe onsen` → [`bin/ckb-puffo-bridge`](bin/ckb-puffo-bridge) → `POST /call` → threaded `[ckb]` reply |
+## What it does
 
-The served surface (webhook `/call`, MCP `/mcp`, chat bridge) is one daemon —
-see [integrations/server.md](integrations/server.md). On labs it runs as
-`concierge-kb.service` on `127.0.0.1:7780` with the bridge alongside.
+1. **Hidden-gem data bag** — a SQLite database (`data/gems.db`, committed to
+   git: the repo is the distribution channel) of curated local spots with
+   voice-ready pitches. Token-overlap search grounds every recommendation the
+   agent makes; callers can contribute gems mid-call (`add_gem`).
+2. **Guest accounts & memory** — caller-ID matched accounts, PIN verification
+   with a 3-strike gate (server decides; the agent only relays digits),
+   registration that mints account+PIN on the phone, per-guest profiles and
+   durable notes, and a fresh per-call trip summary parsed from the guest's
+   booking channel.
+3. **Puffo booking coordination** — per-guest destination channels
+   (`kobe-<account>`), one short thread per trip
+   (`[booking] kobe 2026-12-15 2 days`), tagged requests
+   (`[booking-explore|confirmed|update|canceled]`), async fulfiller replies
+   relayed into the live call, and a consolidated `[booking-itinerary]` posted
+   at hang-up.
+4. **Web extension** (`extension/`) — clip any place you find while browsing
+   into the data bag; your concierge recommends it on the next call.
 
-The markdown files under `kb/` are the **source of truth**. The CLI is a thin
-view/edit layer — humans and agents can edit files directly and commit.
-
-## Layout
+## Architecture
 
 ```
-kb/
-  gems/<city>/<id>.md      # one hidden gem per file (frontmatter + pitch + details)
-  profiles/<account>.md    # one customer per file, keyed by voxcall account number
-bin/ckb                    # stdlib-only Python CLI + `ckb serve` (HTTP /call + MCP /mcp)
-bin/ckb-puffo-bridge       # Puffo listener: `ckb: ...` chat messages -> POST /call
-schema/                    # field documentation for gems and profiles
-skills/hidden-gems/        # skill for Puffo channel agents
-integrations/voxcall.md    # how to wire the five tools into the voxcall brain
-integrations/server.md     # the served surface: webhook, MCP, chat bridge, ops
+Caller ──PSTN──> VB phone number ──> Vocal Bridge (STT/TTS/turn-taking)
+                                          │ background AI, MCP tools/call
+                                          ▼
+                     voice-local  /mcp  (streamable HTTP, stateless)
+                     ├── query_backend: ONE JSON op per query
+                     │     verify · register · change_pin · search_gems ·
+                     │     get_gem · remember · add_gem · booking_establish ·
+                     │     booking_request · check_updates
+                     ├── /healthz  /twilio-forward  /api/gems
+                     ├── SQLite data bag (gems · profiles · notes)
+                     ├── accounts (JSON, state dir) + AuthGate
+                     └── Puffo (channels · threads · fulfiller watch)
 ```
 
-## Quickstart
+Wire facts the design rests on (probed live): VB opens a **fresh MCP session
+per query** and sends **no caller metadata**, so per-call state is keyed by the
+VB logs API's `in_progress` session — which also supplies `caller_phone` for
+the silent caller-ID match. Out-of-band pushes (caller context, booking
+updates) drain into the next tool reply; `{"op":"check_updates"}` is the
+explicit poll the agent runs while requests are pending.
+
+## Run
 
 ```bash
-CKB="$(git rev-parse --show-toplevel)/bin/ckb"   # from inside the checkout
-
-$CKB gems search --city kobe --q "wagyu dinner"      # ranked JSON results
-$CKB gems get kobe-yazawa-teppan                     # full detail incl. insider notes
-$CKB gems add --name "..." --city kyoto --pitch "..." --tags food,quiet
-
-$CKB profile brief 123456          # compact call-start brief (no cold start)
-$CKB profile get +16506567722      # phone-number lookup works too
-$CKB profile note 123456 "Prefers aisle seats on shinkansen."
-$CKB profile upsert 300100 --set name="New Guest" --set 'phones=[+1415...]'
-
-$CKB tools schema                  # xai-realtime tool JSON for voxcall
-
-$CKB serve                         # HTTP server on 127.0.0.1:7780 (CKB_PORT/CKB_BIND)
-curl -s localhost:7780/call -d '{"name":"search_hidden_gems","arguments":{"city":"kobe"}}'
+uv sync
+uv run voice-local import-md kb/     # one-shot legacy markdown -> SQLite
+uv run voice-local serve             # 127.0.0.1:$VOICE_LOCAL_PORT (7780)
+uv run voice-local gems list --city kobe
+uv run pytest tests -q
 ```
 
-No dependencies — plain `python3`. Set `CKB_ROOT` to point at an alternate
-`kb/` directory (tests, staging); consumers outside the checkout set
-`CKB_REPO` to wherever they cloned this repo.
+Config via env (`~/.env` then `./.env`): `VOICE_LOCAL_PORT`, `VOICE_LOCAL_DB`,
+`VOICE_LOCAL_STATE`, `VOICE_LOCAL_GEMS_TOKEN`, `VOICE_LOCAL_DESTINATION`,
+`VOCAL_BRIDGE_API`, `VB_AGENT_ID`, `VB_PHONE_NUMBER`, `VB_PUBLIC_URL`,
+`XAI_API_KEY`, `PUFFO_*`.
 
-## Conventions
+On labs it runs per the Lab Service Protocol: `voice-local.service`
+(Type=notify + watchdog) on `127.0.0.1:7780`, publicly exposed for Vocal Bridge
+through the `voice-local-ngrok.service` static tunnel. `make deploy` from the
+Mac, `make release` on labs.
 
-- Gem ids: `<city>-<slug>` (e.g. `kobe-yazawa-teppan`); city dirs are lowercase slugs.
-- Profiles are keyed by **voxcall account number** (`~/data/Projects/voxcall/accounts/`),
-  with `phones` enabling caller-ID lookup.
-- Profile `## Notes` is append-only with PT timestamps — the accumulating memory.
-- Anything an agent learns that future agents should know goes in a gem or a
-  profile note, then gets committed. Commit early, commit often — this repo IS
-  the shared memory.
+## The data bag is a git artifact
+
+New gems (CLI, extension, or callers) land in `data/gems.db` on the serving
+box. Publish them with a commit:
+
+```bash
+make push-gems     # commit data/gems.db + push
+```
+
+## Legacy
+
+`bin/ckb` and the markdown `kb/` tree remain from concierge-kb for the
+voxcall Grok-path integration; `voice-local import-md` migrates their content.
+New consumers should use the MCP surface or `voice_local.db`.

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font: 13px/1.5 system-ui, sans-serif; padding: 14px; width: 360px; }
+    label { display: block; font-weight: 600; margin: 10px 0 2px; }
+    input { width: 100%; box-sizing: border-box; padding: 5px 6px;
+            border: 1px solid #c8c6bd; border-radius: 5px; font: inherit; }
+    button { margin-top: 12px; padding: 6px 14px; border: 0; border-radius: 6px;
+             background: #2e5e46; color: #fff; font: inherit; cursor: pointer; }
+    #status { margin-left: 8px; color: #2e5e46; }
+  </style>
+</head>
+<body>
+  <h2>voice-local gems — settings</h2>
+  <label for="endpoint">voice-local endpoint</label>
+  <input id="endpoint" placeholder="https://lula-tasteless-businesslike.ngrok-free.dev">
+  <label for="token">Gems token (VOICE_LOCAL_GEMS_TOKEN)</label>
+  <input id="token" type="password">
+  <button id="save">Save</button><span id="status"></span>
+  <script src="options.js"></script>
+</body>
+</html>

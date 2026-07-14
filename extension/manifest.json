@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "voice-local gems",
+  "version": "0.1.0",
+  "description": "Clip any place you find on the web into your voice-local hidden-gems bag — your voice concierge recommends it on the next call.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Add to voice-local gems"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["<all_urls>"]
+}
