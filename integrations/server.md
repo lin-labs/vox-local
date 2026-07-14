@@ -66,7 +66,9 @@ Grammar: `ckb: help` | `ckb: search <city|-> <query...>` | `ckb: get <id>` |
 - **Profile tools are disabled over chat by default** (PII — AGENTS.md rule 5);
   the unit must set `CKB_BRIDGE_ALLOW_PROFILES=1` to enable `brief`/`remember`.
 - `CKB_BRIDGE_CHANNELS=ch_a,ch_b` restricts which channels it answers in
-  (default: any channel the identity can see).
+  (default: any channel the identity can see). On labs the unit pins this to
+  Hackerthon #General (`ch_d91428e5-…`) — the bridge must NOT post into the
+  voxcall-booking space (that's live booking traffic).
 - Relay sessions expire (~48h); the bridge re-runs `identity use` before every
   listen (re)start, so it heals itself after expiry and relay hiccups.
 
