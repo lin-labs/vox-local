@@ -203,3 +203,11 @@ def test_normalize_start_date():
     bumped, note = normalize_start_date("2024-12-15")
     assert bumped >= "2026" and "in the past" in note
     assert normalize_start_date("not-a-date") == ("not-a-date", "")
+
+
+def test_verify_swapped_fields_do_not_burn(conn, store):
+    svc = _services(conn, store, caller_id="+19998887777")
+    out = q(svc, op="verify", pin="123456", account_number="4242")  # transposed
+    assert "SWAPPED" in out
+    assert svc.gate.attempts == 0
+    assert "verified" in q(svc, op="verify", pin="4242", account_number="123456")

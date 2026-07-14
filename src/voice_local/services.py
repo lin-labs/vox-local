@@ -179,6 +179,16 @@ class CallServices:
                             "can't verify — ask for their ACCOUNT NUMBER too, then send "
                             "both (account_number + pin) in one verify query."})
             return
+        if len(pin) == 6 and len(acct) == 4:
+            # Transposed fields (accounts are 6 digits, PINs are 4) — a live-call
+            # failure mode; point it out instead of burning an attempt.
+            await self._send("auth_result", {
+                "ok": False, "locked": False,
+                "attempts_left": gate.max_attempts - gate.attempts,
+                "say_hint": "the account number and PIN look SWAPPED (account numbers "
+                            "are 6 digits, PINs are 4) — resend with the fields the "
+                            "right way around."})
+            return
         account = gate.attempt(pin, acct)
         if account is None:
             left = gate.max_attempts - gate.attempts
