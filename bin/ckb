@@ -18,12 +18,17 @@ Root resolution: $CKB_ROOT, else <script>/../kb.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import re
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
+
+VERSION = "0.2.0"
 
 try:
     from zoneinfo import ZoneInfo
@@ -393,6 +398,158 @@ def cmd_tools_schema(_args) -> int:
 
 
 # --------------------------------------------------------------------------
+# serve — the same five tools over HTTP (webhook `/call` + MCP `/mcp`)
+# --------------------------------------------------------------------------
+#
+# One dispatch path: every network call is translated to the exact argv the
+# CLI would take and routed back through main(), so subprocess consumers
+# (voxcall) and network consumers (Puffo bridge, MCP agents) can never drift.
+
+_CALL_LOCK = threading.Lock()  # main() mutates sys.stdout capture + kb files
+
+
+def tool_argv(name: str, args: dict) -> list[str] | None:
+    """Translate a tool call into ckb argv; None if the tool is unknown."""
+    args = args or {}
+    if name == "search_hidden_gems":
+        argv = ["gems", "search"]
+        if args.get("city"):
+            argv += ["--city", str(args["city"])]
+        if args.get("query"):
+            argv += ["--q", str(args["query"])]
+        for t in str(args.get("tags") or "").split(","):
+            if t.strip():
+                argv += ["--tag", t.strip()]
+        return argv
+    if name == "get_hidden_gem":
+        return ["gems", "get", str(args.get("id", ""))]
+    if name == "get_caller_brief":
+        return ["profile", "brief", str(args.get("key", ""))]
+    if name == "remember_about_caller":
+        return ["profile", "note", str(args.get("key", "")), str(args.get("note", ""))]
+    if name == "add_hidden_gem":
+        argv = ["gems", "add", "--name", str(args.get("name", "")),
+                "--city", str(args.get("city", "")),
+                "--pitch", str(args.get("pitch", "")),
+                "--source", str(args.get("source") or "agent")]
+        if args.get("tags"):
+            argv += ["--tags", str(args["tags"])]
+        return argv
+    return None
+
+
+def call_tool(name: str, arguments: dict) -> tuple[dict, bool]:
+    """Run one tool in-process; returns (json payload, ok)."""
+    argv = tool_argv(name, arguments)
+    if argv is None:
+        return {"error": f"unknown tool '{name}'"}, False
+    buf = io.StringIO()
+    with _CALL_LOCK, contextlib.redirect_stdout(buf):
+        try:
+            rc = main(argv)
+        except SystemExit as exc:  # argparse rejects bad/missing values
+            rc = exc.code if isinstance(exc.code, int) else 2
+        except Exception as exc:  # noqa: BLE001 - report, never kill the server
+            return {"error": f"{type(exc).__name__}: {exc}"}, False
+    out = buf.getvalue().strip()
+    try:
+        data = json.loads(out) if out else {}
+    except ValueError:
+        data = {"raw": out}
+    return data, rc == 0
+
+
+def _mcp_handle(req: dict) -> dict | None:
+    """Minimal MCP (Streamable HTTP, JSON-RPC). None = notification, no body."""
+    method, rid = req.get("method", ""), req.get("id")
+    if method.startswith("notifications/"):
+        return None
+    if method == "initialize":
+        result = {
+            "protocolVersion": (req.get("params") or {}).get("protocolVersion", "2025-06-18"),
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "concierge-kb", "version": VERSION},
+        }
+    elif method == "ping":
+        result = {}
+    elif method == "tools/list":
+        result = {"tools": [{"name": t["name"], "description": t["description"],
+                             "inputSchema": t["parameters"]} for t in TOOLS]}
+    elif method == "tools/call":
+        params = req.get("params") or {}
+        data, ok = call_tool(params.get("name", ""), params.get("arguments") or {})
+        result = {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False)}],
+                  "isError": not ok}
+    else:
+        return {"jsonrpc": "2.0", "id": rid,
+                "error": {"code": -32601, "message": f"method not found: {method}"}}
+    return {"jsonrpc": "2.0", "id": rid, "result": result}
+
+
+def cmd_serve(args) -> int:
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = f"ckb/{VERSION}"
+        protocol_version = "HTTP/1.1"
+
+        def _reply(self, code: int, obj) -> None:
+            body = json.dumps(obj, ensure_ascii=False).encode() if obj is not None else b""
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _body(self) -> dict | None:
+            try:
+                raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                data = json.loads(raw or b"{}")
+                return data if isinstance(data, dict) else None
+            except (ValueError, OSError):
+                return None
+
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            path = self.path.split("?", 1)[0]
+            if path in ("/", "/healthz"):
+                self._reply(200, {"ok": True, "service": "concierge-kb",
+                                  "version": VERSION, "root": str(kb_root())})
+            elif path == "/tools/schema":
+                self._reply(200, TOOLS)
+            else:
+                self._reply(404, {"error": f"no route {path}"})
+
+        def do_POST(self) -> None:  # noqa: N802 - http.server API
+            path = self.path.split("?", 1)[0]
+            data = self._body()
+            if data is None:
+                self._reply(400, {"error": "body must be a JSON object"})
+            elif path == "/call":
+                payload, _ok = call_tool(data.get("name", ""), data.get("arguments") or {})
+                self._reply(200, payload)
+            elif path == "/mcp":
+                resp = _mcp_handle(data)
+                self._reply(202, None) if resp is None else self._reply(200, resp)
+            else:
+                self._reply(404, {"error": f"no route {path}"})
+
+        def log_message(self, fmt: str, *fargs) -> None:
+            print(f"{now_pt()} {self.address_string()} {fmt % fargs}", file=sys.stderr)
+
+    httpd = ThreadingHTTPServer((args.bind, args.port), Handler)
+    print(json.dumps({"serving": f"http://{args.bind}:{args.port}",
+                      "endpoints": ["/healthz", "/tools/schema", "POST /call", "POST /mcp"],
+                      "root": str(kb_root())}), file=sys.stderr, flush=True)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+    return 0
+
+
+# --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
 
@@ -445,6 +602,11 @@ def main(argv: list[str] | None = None) -> int:
     tools = sub.add_parser("tools", help="integration schemas").add_subparsers(dest="sub", required=True)
     ts = tools.add_parser("schema", help="voxcall/xai realtime tool schemas (JSON)")
     ts.set_defaults(fn=cmd_tools_schema)
+
+    srv = sub.add_parser("serve", help="HTTP server: /healthz /tools/schema POST /call POST /mcp")
+    srv.add_argument("--port", type=int, default=int(os.environ.get("CKB_PORT", "7780")))
+    srv.add_argument("--bind", default=os.environ.get("CKB_BIND", "127.0.0.1"))
+    srv.set_defaults(fn=cmd_serve)
 
     args = ap.parse_args(argv)
     return args.fn(args)

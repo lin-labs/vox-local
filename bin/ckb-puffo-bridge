@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""ckb-puffo-bridge — let Puffo chat messages invoke the concierge-kb server.
+
+Runs one long-lived `puffo message listen --json` (same pattern as voxcall's
+PuffoListener) and treats any channel message starting with `ckb:` as a tool
+invocation against `ckb serve` (POST /call). The result is posted back into
+the same channel, threaded under the triggering message.
+
+Message grammar (case-insensitive trigger):
+  ckb: help
+  ckb: search <city> <free text query...>     city '-' or 'any' = all cities
+  ckb: get <gem-id>
+  ckb: brief <account-or-phone>               (profiles gated, see below)
+  ckb: remember <account-or-phone> <note...>  (profiles gated, see below)
+  ckb: {"name": "<tool>", "arguments": {...}} raw tool-call JSON, any tool
+
+Profiles contain PII (concierge-kb AGENTS.md rule 5): `brief`/`remember` and
+raw-JSON profile tools only work when CKB_BRIDGE_ALLOW_PROFILES=1.
+
+Env:
+  CKB_URL             ckb serve base URL      (default http://127.0.0.1:7780)
+  PUFFO_BIN           puffo binary            (default: PATH, then known builds)
+  PUFFO_SERVER_URL    relay                   (default https://chat.puffo.ai/relay)
+  PUFFO_IDENTITY      identity slug           (default: puffo's default identity)
+  CKB_BRIDGE_CHANNELS comma-separated channel ids to answer in ("" = all)
+  CKB_BRIDGE_ALLOW_PROFILES=1  enable profile tools over chat
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+CKB_URL = os.environ.get("CKB_URL", "http://127.0.0.1:7780").rstrip("/")
+SERVER_URL = os.environ.get("PUFFO_SERVER_URL", "https://chat.puffo.ai/relay")
+IDENTITY = os.environ.get("PUFFO_IDENTITY", "")
+CHANNELS = {c.strip() for c in os.environ.get("CKB_BRIDGE_CHANNELS", "").split(",") if c.strip()}
+ALLOW_PROFILES = os.environ.get("CKB_BRIDGE_ALLOW_PROFILES", "") == "1"
+
+REPLY_PREFIX = "[ckb]"          # never matches the `ckb:` trigger -> no self-loop
+PROFILE_TOOLS = {"get_caller_brief", "remember_about_caller"}
+TRIGGER_RE = re.compile(r"^\s*ckb\s*:\s*(.*)$", re.IGNORECASE | re.DOTALL)
+
+_FALLBACK_BINS = (
+    Path.home() / ".local/bin/puffo",
+    Path.home() / ".cargo/bin/puffo",
+    Path("/home/blin/Experiments/voice/puffo-cli/target/release/puffo"),
+)
+
+
+def puffo_bin() -> str:
+    configured = os.environ.get("PUFFO_BIN", "")
+    if configured:
+        return configured
+    found = shutil.which("puffo")
+    if found:
+        return found
+    for p in _FALLBACK_BINS:
+        if p.exists():
+            return str(p)
+    sys.exit("no puffo binary found: set PUFFO_BIN or install puffo")
+
+
+def log(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
+def call_ckb(name: str, arguments: dict) -> dict:
+    if name in PROFILE_TOOLS and not ALLOW_PROFILES:
+        return {"error": "profile tools are disabled over chat (set CKB_BRIDGE_ALLOW_PROFILES=1)"}
+    req = urllib.request.Request(
+        f"{CKB_URL}/call",
+        data=json.dumps({"name": name, "arguments": arguments}).encode(),
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.load(resp)
+    except Exception as exc:  # noqa: BLE001 - report into the chat, keep listening
+        return {"error": f"concierge-kb server unreachable at {CKB_URL}: {exc}"}
+
+
+HELP = (
+    "commands: `search <city> <query...>` (city `-` = all) | `get <gem-id>` | "
+    "`brief <key>` | `remember <key> <note...>` | raw JSON "
+    '`{"name": "...", "arguments": {...}}`'
+)
+
+
+def parse_command(payload: str) -> tuple[str, dict] | str:
+    """Payload after `ckb:` -> (tool, arguments), or a direct reply string."""
+    payload = payload.strip()
+    if payload.startswith("{"):
+        try:
+            obj = json.loads(payload)
+            return str(obj.get("name", "")), dict(obj.get("arguments") or {})
+        except (ValueError, TypeError):
+            return "that JSON didn't parse — " + HELP
+    parts = payload.split()
+    verb = parts[0].lower() if parts else "help"
+    rest = parts[1:]
+    if verb == "search" and rest:
+        city = "" if rest[0] in ("-", "any") else rest[0]
+        return "search_hidden_gems", {"city": city, "query": " ".join(rest[1:])}
+    if verb == "get" and len(rest) == 1:
+        return "get_hidden_gem", {"id": rest[0]}
+    if verb == "brief" and len(rest) == 1:
+        return "get_caller_brief", {"key": rest[0]}
+    if verb == "remember" and len(rest) >= 2:
+        return "remember_about_caller", {"key": rest[0], "note": " ".join(rest[1:])}
+    return HELP
+
+
+def format_reply(tool: str, result: dict) -> str:
+    if "error" in result:
+        return f"{REPLY_PREFIX} error: {result['error']}"
+    if tool == "search_hidden_gems":
+        gems = result.get("gems", [])
+        if not gems:
+            return f"{REPLY_PREFIX} no gems matched."
+        lines = [f"{REPLY_PREFIX} {len(gems)} gem(s):"]
+        lines += [f"{i}. {g.get('id')} — {g.get('name')}: {g.get('pitch', '').strip()}"
+                  for i, g in enumerate(gems, 1)]
+        return "\n".join(lines)
+    if tool == "get_hidden_gem":
+        head = f"{REPLY_PREFIX} {result.get('name')} ({result.get('id')}, {result.get('city')})"
+        details = json.dumps({k: v for k, v in result.items() if k != "sections"},
+                             ensure_ascii=False)
+        return f"{head}\n{result.get('pitch', '').strip()}\n{details}"
+    if tool == "get_caller_brief":
+        return f"{REPLY_PREFIX}\n{result.get('brief', json.dumps(result, ensure_ascii=False))}"
+    return f"{REPLY_PREFIX} {json.dumps(result, ensure_ascii=False)}"
+
+
+def send_reply(bin_: str, text: str, channel: str, thread: str) -> None:
+    argv = [bin_, "--server-url", SERVER_URL]
+    if IDENTITY:
+        argv += ["--identity", IDENTITY]
+    argv += ["message", "send", text, "--channel", channel]
+    if thread:
+        argv += ["--thread", thread]
+    done = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    if done.returncode != 0:
+        log(f"reply send failed rc={done.returncode}: {(done.stderr or done.stdout)[:300]}")
+
+
+def ensure_login(bin_: str) -> None:
+    """Relay sessions expire (~48h); `identity use` re-logins and rotates the
+    subkey. Run before each listen (re)start so the daemon survives expiry."""
+    slug = IDENTITY
+    if not slug:
+        done = subprocess.run([bin_, "identity", "whoami"], capture_output=True,
+                              text=True, timeout=15)
+        slug = (done.stdout.splitlines() or [""])[0].strip()
+    if not slug:
+        log("login refresh skipped: no identity resolved")
+        return
+    done = subprocess.run([bin_, "--server-url", SERVER_URL, "identity", "use", slug],
+                          capture_output=True, text=True, timeout=30)
+    if done.returncode != 0:
+        log(f"login refresh failed for {slug}: {(done.stderr or done.stdout)[:300]}")
+
+
+def handle_event(bin_: str, event: dict) -> None:
+    if event.get("type") != "message":
+        return
+    channel = event.get("channel_id") or ""
+    if CHANNELS and channel not in CHANNELS:
+        return
+    content = str(event.get("content", ""))
+    m = TRIGGER_RE.match(content)
+    if not m:
+        return
+    parsed = parse_command(m.group(1))
+    if isinstance(parsed, str):
+        reply = f"{REPLY_PREFIX} {parsed}"
+    else:
+        tool, arguments = parsed
+        log(f"invoke {tool} {json.dumps(arguments, ensure_ascii=False)} "
+            f"(from {event.get('sender_slug')} in {channel})")
+        reply = format_reply(tool, call_ckb(tool, arguments))
+    thread = event.get("thread_root_id") or event.get("envelope_id") or ""
+    send_reply(bin_, reply, channel, thread)
+
+
+def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--parse-only":
+        # test hook: print the tool call (or reply) a message would produce
+        parsed = parse_command(" ".join(sys.argv[2:]))
+        print(json.dumps({"reply": parsed} if isinstance(parsed, str)
+                         else {"name": parsed[0], "arguments": parsed[1]}, ensure_ascii=False))
+        return 0
+
+    bin_ = puffo_bin()
+    argv = [bin_, "--server-url", SERVER_URL]
+    if IDENTITY:
+        argv += ["--identity", IDENTITY]
+    argv += ["message", "listen", "--json"]
+    backoff = 1.0
+    while True:  # same restart-with-backoff shape as voxcall's PuffoListener
+        started = time.monotonic()
+        try:
+            ensure_login(bin_)
+        except Exception as exc:  # noqa: BLE001
+            log(f"login refresh error: {exc!r}")
+        log(f"listening via {bin_} (ckb at {CKB_URL}, "
+            f"channels={'all' if not CHANNELS else ','.join(sorted(CHANNELS))})")
+        try:
+            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True)
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict):
+                    try:
+                        handle_event(bin_, event)
+                    except Exception as exc:  # noqa: BLE001 - one bad event won't stop the ear
+                        log(f"event error: {exc!r}")
+            proc.wait()
+        except KeyboardInterrupt:
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            log(f"listen error: {exc!r}")
+        if time.monotonic() - started > 60:
+            backoff = 1.0
+        log(f"listen exited; restarting in {backoff:.0f}s")
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 30.0)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

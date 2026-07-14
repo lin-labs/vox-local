@@ -29,3 +29,9 @@ This repo holds two datasets, both plain markdown with YAML-ish frontmatter:
   JSON keys `gems[].id/name/pitch`, `brief`, `ok`. Don't rename them.
 - The tool schemas in `bin/ckb` (`ckb tools schema`) are loaded by the voxcall
   brain at call setup; keep names/parameters backward compatible.
+- `ckb serve` (systemd unit `concierge-kb.service`, 127.0.0.1:7780 on labs)
+  exposes the same tools as `POST /call` (CLI-identical JSON) and `POST /mcp`
+  (MCP tools/call); `bin/ckb-puffo-bridge` (`concierge-kb-bridge.service`)
+  turns `ckb: ...` Puffo messages into `/call` invocations. Keep `/call`
+  payload shapes and the `ckb:` trigger grammar backward compatible — see
+  `integrations/server.md`.
