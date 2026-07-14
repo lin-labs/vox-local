@@ -189,8 +189,10 @@ def test_booking_flow_short_thread_and_date_bump(conn, store, fake_puffo):
     sends = _sent(fake_puffo)
     texts = [a[a.index("send") + 1] for a in sends]
     assert texts[0].startswith("[booking] kobe 20") and texts[0].endswith("2 days")
-    assert texts[1] == "[booking-context] counter dinner"
-    assert texts[2] == "[booking-explore] dinner for two"
+    # the fulfiller is @-tagged in the context post and EVERY request message,
+    # so each thread that needs her work notifies her
+    assert texts[1] == f"[booking-context] @{FULFILLER} counter dinner"
+    assert texts[2] == f"[booking-explore] @{FULFILLER} dinner for two"
     asyncio.run(svc.close())
     itinerary = _sent(fake_puffo)[-1]
     assert itinerary[itinerary.index("send") + 1].startswith("[booking-itinerary]")

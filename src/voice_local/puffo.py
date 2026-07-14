@@ -206,8 +206,11 @@ class PuffoClient:
 
     async def invite(self, slug: str, channel_id: str) -> bool:
         """Invite `slug` into a channel (so the human fulfiller sees it). True on
-        success; failures are logged and non-fatal — booking still works, unseen."""
-        argv = self._base_argv() + ["invitation", "send", slug, "--channel", channel_id]
+        success; failures are logged and non-fatal — booking still works, unseen.
+        --space is passed explicitly: the CLI's local channel cache goes stale for
+        channels created by others and then refuses the id outright."""
+        argv = self._base_argv() + ["invitation", "send", slug, "--channel", channel_id,
+                                    *self._space_argv()]
         return await self._run(argv, label="invite") is not None
 
     def listen_argv(self) -> list[str]:
@@ -377,9 +380,12 @@ class BookingSession:
         self.account.booking_threads[name] = env_id
         self._store.save(self.account)
         self.thread_root, self.thread_name = env_id, name
-        if reason.strip():
-            # The reason rides INSIDE the thread (the title stays short by design).
-            await self._client.send(f"[booking-context] {reason.strip()}",
+        if reason.strip() or self._fulfiller:
+            # The reason rides INSIDE the thread (the title stays short by design),
+            # and the fulfiller is @-tagged so every thread that needs her work
+            # notifies her from message one.
+            mention = f"@{self._fulfiller} " if self._fulfiller else ""
+            await self._client.send(f"[booking-context] {mention}{reason.strip()}".strip(),
                                     thread=env_id, channel=self.channel_id)
         await self._publish("booking_thread", {"name": name, "root": env_id, "reused": False})
         return (f"booking thread '{name}' opened — use explore/confirm/update/cancel tools "
@@ -398,7 +404,8 @@ class BookingSession:
             return ("SILENT: this exact request is already filed — say absolutely nothing "
                     "about it; do not re-announce; continue the conversation naturally.")
         self._last_request = (key, time.monotonic())
-        env_id = await self._client.send(f"{tag} {details}", thread=self.thread_root,
+        mention = f"@{self._fulfiller} " if self._fulfiller else ""
+        env_id = await self._client.send(f"{tag} {mention}{details}", thread=self.thread_root,
                                          channel=self.channel_id)
         if not env_id:
             return "could not post the request — apologize and offer to try again."
