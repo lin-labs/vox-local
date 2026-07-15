@@ -103,3 +103,26 @@ def test_http_surface(tmp_path):
         assert r.status_code == 200 and r.json()["gem"]["source"] == "web-extension"
         got = client.get("/api/gems?city=kobe").json()
         assert got["count"] == 2
+
+
+def test_mcp_token_gate(tmp_path):
+    from starlette.testclient import TestClient
+
+    conn = db.connect(tmp_path / "bag.db")
+    backend, _ = make_backend(None)
+    app = mcp_server.build_app(backend, conn=conn, version="test",
+                               public_host="example.ngrok-free.dev",
+                               mcp_token="sekret42")
+    with TestClient(app) as client:
+        # healthz stays open
+        assert client.get("/healthz").json()["ok"] is True
+        # /mcp: no credential -> 401; wrong credential -> 401
+        assert client.post("/mcp", json={}).status_code == 401
+        assert client.post("/mcp", headers={"Authorization": "Bearer nope"},
+                           json={}).status_code == 401
+        # right credential in any of the three shapes -> passes the gate
+        # (the MCP transport then rejects the bad payload, but NOT with a 401)
+        for kwargs in ({"headers": {"Authorization": "Bearer sekret42"}},
+                       {"headers": {"X-API-Key": "sekret42"}},
+                       {"params": {"key": "sekret42"}}):
+            assert client.post("/mcp", json={}, **kwargs).status_code != 401

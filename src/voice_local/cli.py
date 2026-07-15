@@ -107,15 +107,20 @@ async def _run_serve(args) -> int:
         version = "dev"
     public_host = os.environ.get("VB_PUBLIC_URL", "").removeprefix(
         "https://").removeprefix("http://").rstrip("/")
+    mcp_token = os.environ.get("VOICE_LOCAL_MCP_TOKEN", "")
+    token_file = _state_dir() / "mcp-bearer-token"
+    if not mcp_token and token_file.exists():
+        mcp_token = token_file.read_text().strip()
     app = build_app(backend, conn=conn, version=version,
                     vb_phone_number=os.environ.get("VB_PHONE_NUMBER", ""),
                     public_host=public_host,
-                    gems_token=os.environ.get("VOICE_LOCAL_GEMS_TOKEN", ""))
+                    gems_token=os.environ.get("VOICE_LOCAL_GEMS_TOKEN", ""),
+                    mcp_token=mcp_token)
 
     n_gems = conn.execute("SELECT count(*) FROM gems").fetchone()[0]
     print(f"  vox-local: 127.0.0.1:{port}/mcp  (gems: {n_gems}, "
           f"accounts: {len(store.load_all())}, booking: {'ON' if puffo else 'OFF'}, "
-          f"destination: {destination})")
+          f"mcp-auth: {'ON' if mcp_token else 'OFF'}, destination: {destination})")
     if public_host:
         print(f"  Public: https://{public_host}/mcp")
 
@@ -154,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
         p_add.add_argument(f"--{f}", required=True)
     for f in ("area", "tags", "price", "booking", "url", "details"):
         p_add.add_argument(f"--{f}", default="")
+    p_jsonl = gems_sub.add_parser("import-jsonl", help="bulk-seed gems from JSONL files")
+    p_jsonl.add_argument("files", nargs="+")
 
     p_acct = sub.add_parser("account", help="manage caller accounts")
     acct_sub = p_acct.add_subparsers(dest="account_cmd", required=True)
@@ -179,6 +186,15 @@ def main(argv: list[str] | None = None) -> int:
             for g in kbdb.search_gems(conn, city=args.city, query=args.query, limit=100):
                 print(f"{g['id']:<44} [{','.join(g['tags'])}] {g['pitch'][:70]}")
             return 0
+        if args.gems_cmd == "import-jsonl":
+            failed = 0
+            for f in args.files:
+                res = kbdb.import_jsonl(conn, f)
+                failed += len(res["errors"])
+                print(f"{f}: imported {res['imported']}, errors {len(res['errors'])}")
+                for e in res["errors"]:
+                    print(f"  ! {e}")
+            return 1 if failed else 0
         gem = kbdb.add_gem(conn, name=args.name, city=args.city, pitch=args.pitch,
                            area=args.area, tags=args.tags, price=args.price,
                            booking=args.booking, url=args.url, details=args.details,

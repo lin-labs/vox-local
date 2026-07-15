@@ -76,3 +76,26 @@ def test_import_markdown_idempotent(tmp_path):
     # notes not duplicated on re-import
     n = conn.execute("SELECT count(*) FROM notes WHERE account='123456'").fetchone()[0]
     assert n == 2
+
+
+def test_import_jsonl_seeds_and_reports_errors(tmp_path):
+    conn = _conn(tmp_path)
+    f = tmp_path / "batch.jsonl"
+    f.write_text(
+        '{"name":"Yabaton Honten","city":"nagoya","area":"osu","tags":"food,miso",'
+        '"price":"$$","booking":"walk-in","pitch":"Miso katsu institution.",'
+        '"details":"Order the waraji katsu."}\n'
+        'not json\n'
+        '{"name":"No Details","city":"nagoya","pitch":"x"}\n'
+        '{"name":"Weird Fields","city":"hakone","pitch":"Fine.","details":"Fine.",'
+        '"price":"cheap","booking":"telepathy"}\n')
+    res = db.import_jsonl(conn, f)
+    assert res["imported"] == 2
+    assert len(res["errors"]) == 2
+    gem = db.get_gem(conn, "nagoya-yabaton-honten")
+    assert gem["price"] == "$$" and gem["booking"] == "walk-in"
+    weird = db.get_gem(conn, "hakone-weird-fields")
+    assert weird["price"] == "" and weird["booking"] == ""
+    # idempotent upsert
+    assert db.import_jsonl(conn, f)["imported"] == 2
+    assert conn.execute("SELECT count(*) FROM gems").fetchone()[0] == 2

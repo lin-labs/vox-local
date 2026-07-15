@@ -237,11 +237,13 @@ TOOL_DESCRIPTION = (
 
 
 def build_app(backend: VBBackend, *, conn, version: str, vb_phone_number: str = "",
-              public_host: str = "", gems_token: str = ""):
+              public_host: str = "", gems_token: str = "", mcp_token: str = ""):
     """Starlette app: /mcp + /healthz + /twilio-forward + /api/gems.
 
     `public_host` names the tunnel hostname VB connects through (Host allowlist);
-    `gems_token` guards the extension's POST /api/gems (Bearer)."""
+    `gems_token` guards the extension's POST /api/gems (Bearer); `mcp_token`
+    guards /mcp itself — accepted as `Authorization: Bearer`, `X-API-Key`, or a
+    `?key=` query param (for MCP clients that can only carry a URL)."""
     from mcp.server.fastmcp import FastMCP
     from mcp.server.transport_security import TransportSecuritySettings
     from starlette.responses import JSONResponse, Response
@@ -309,7 +311,32 @@ def build_app(backend: VBBackend, *, conn, version: str, vb_phone_number: str = 
         log.info("gem added via extension: %s (%s)", gem["id"], gem.get("url") or "no url")
         return JSONResponse({"ok": True, "gem": gem}, headers=cors)
 
-    return mcp.streamable_http_app()
+    app = mcp.streamable_http_app()
+    if not mcp_token:
+        return app
+
+    import hmac
+    from urllib.parse import parse_qs
+
+    async def token_gate(scope, receive, send):  # noqa: ANN001
+        if scope["type"] == "http" and scope.get("path", "").rstrip("/") == "/mcp":
+            headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                       for k, v in scope.get("headers", [])}
+            auth = headers.get("authorization", "")
+            supplied = (auth.split(" ", 1)[1].strip()
+                        if auth.lower().startswith("bearer ") else
+                        headers.get("x-api-key", "").strip())
+            if not supplied:
+                qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+                supplied = (qs.get("key") or [""])[0]
+            if not hmac.compare_digest(supplied, mcp_token):
+                log.warning("mcp auth rejected (client %s)", scope.get("client"))
+                await JSONResponse({"error": "unauthorized"}, status_code=401)(
+                    scope, receive, send)
+                return
+        await app(scope, receive, send)
+
+    return token_gate
 
 
 # ---- systemd notify (Lab Service Protocol: Type=notify + watchdog) ------------------

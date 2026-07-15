@@ -238,6 +238,39 @@ def import_markdown(conn: sqlite3.Connection, kb_dir: str | Path) -> dict:
     return {"gems": n_gems, "profiles": n_profiles}
 
 
+_BOOKING_KINDS = {"", "walk-in", "phone", "online", "via-hotel"}
+_PRICE_TIERS = {"", "$", "$$", "$$$", "$$$$"}
+
+
+def import_jsonl(conn: sqlite3.Connection, path: str | Path) -> dict:
+    """Bulk-seed gems from a JSONL file (one gem object per line: name, city,
+    pitch, details required; area/tags/price/booking optional). Invalid lines
+    are reported, not imported; generated phone numbers are never trusted."""
+    imported = 0
+    errors: list[str] = []
+    for i, line in enumerate(Path(path).read_text().splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            g = json.loads(line)
+        except json.JSONDecodeError as e:
+            errors.append(f"line {i}: bad json ({e})")
+            continue
+        missing = [k for k in ("name", "city", "pitch", "details") if not str(g.get(k, "")).strip()]
+        if missing:
+            errors.append(f"line {i}: missing {missing}")
+            continue
+        add_gem(conn,
+                name=g["name"], city=g["city"], pitch=g["pitch"],
+                area=g.get("area", ""), tags=g.get("tags", ""),
+                price=g.get("price", "") if g.get("price", "") in _PRICE_TIERS else "",
+                booking=g.get("booking", "") if g.get("booking", "") in _BOOKING_KINDS else "",
+                source=g.get("source", "curator"), details=g["details"])
+        imported += 1
+    return {"imported": imported, "errors": errors}
+
+
 def export_json(conn: sqlite3.Connection) -> str:
     """Whole-bag JSON dump (debug / diffing / the extension's duplicate check)."""
     return json.dumps({

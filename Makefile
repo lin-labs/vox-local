@@ -1,8 +1,8 @@
 # vox-local — lab-service verbs (systemd-supervised; see blin-lab-service).
 
 SHELL := /bin/bash
-UNIT := vox-local.service
-NGROK_UNIT := vox-local-ngrok.service
+UNIT := voice-local.service
+NGROK_UNIT := voice-local-ngrok.service
 
 .PHONY: serve test start stop restart status logs tail release deploy push-gems
 

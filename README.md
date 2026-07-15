@@ -69,6 +69,12 @@ Config via env (`~/.env` then `./.env`): `VOICE_LOCAL_PORT`, `VOICE_LOCAL_DB`,
 `VOCAL_BRIDGE_API`, `VB_AGENT_ID`, `VB_PHONE_NUMBER`, `VB_PUBLIC_URL`,
 `XAI_API_KEY`, `PUFFO_*`.
 
+`/mcp` is bearer-gated: the token lives at
+`$VOICE_LOCAL_STATE/mcp-bearer-token` (or env `VOICE_LOCAL_MCP_TOKEN`) and
+Vocal Bridge presents it as `Authorization: Bearer`, `X-API-Key`, or a `?key=`
+query param on the MCP URL (the shape its config reliably carries). Missing
+token file = auth off. `/healthz` stays open.
+
 On labs it runs per the Lab Service Protocol: `vox-local.service`
 (Type=notify + watchdog) on `127.0.0.1:7780`, publicly exposed for Vocal Bridge
 through the `vox-local-ngrok.service` static tunnel. `make deploy` from the
