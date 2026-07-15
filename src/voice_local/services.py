@@ -116,6 +116,18 @@ class CallServices:
         method = self._QUERY_OPS.get(str(q.get("op", "")).strip().lower())
         if method is None:
             return f"unknown op {q.get('op')!r} — valid ops: {', '.join(self._QUERY_OPS)}"
+        # Preferred caller-ID path: the agent passes the platform-provided number in
+        # the query itself (the MCP wire carries no metadata; the VB logs API is only
+        # the fallback). Model-relayed digits are safe to trust for the MATCH because
+        # the PIN still gates verification — a wrong number just means no match.
+        agent_phone = str(q.pop("caller_phone", "") or "").strip()
+        if agent_phone and self.gate.verified is None and self.gate.matched is None:
+            matched = self._store.lookup_by_phone(agent_phone)
+            if matched is not None:
+                log.info("caller-ID match via agent-passed caller_phone")
+                self.gate.matched = matched
+                if not self._caller_id:
+                    self._caller_id = agent_phone
         captured: list[tuple[str, dict]] = []
         outer_send = self._send
 

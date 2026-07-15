@@ -219,3 +219,18 @@ def test_verify_swapped_fields_do_not_burn(conn, store):
     assert "SWAPPED" in out
     assert svc.gate.attempts == 0
     assert "verified" in q(svc, op="verify", pin="4242", account_number="123456")
+
+
+def test_agent_passed_caller_phone_enables_pin_only_match(conn, store):
+    # resolver had no caller-ID (solo fallback), but the agent passes the number
+    svc = _services(conn, store, caller_id="")
+    out = q(svc, op="verify", caller_phone="+1 (650) 656-7722", pin="4242")
+    assert "verified — greet Boyan Lin" in out
+    assert svc.gate.verified.account_number == "123456"
+
+
+def test_agent_passed_wrong_phone_still_needs_account_number(conn, store):
+    svc = _services(conn, store, caller_id="")
+    out = q(svc, op="verify", caller_phone="+19990001111", pin="4242")
+    assert "ACCOUNT NUMBER" in out   # no match -> unknown-caller path, no burn
+    assert svc.gate.attempts == 0
