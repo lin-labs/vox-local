@@ -380,15 +380,85 @@ class CallServices:
         client, _listener = self._puffo
         if not self._destination:
             return client.channel_id, ""
+        newly_created = not account.channels.get(
+            re.sub(r"[^a-z0-9]+", "-", self._destination.lower()).strip("-"), "")
         channel_id = await ensure_user_channel(
             client, self._store, account, self._destination,
             space_id=self._space_id, fulfiller_slug=self._fulfiller,
             invite_slugs=self._channel_invites)
         if channel_id and channel_id != client.channel_id:
+            if newly_created:
+                await self._send_welcome(account, channel_id)
             return channel_id, ""
         return channel_id, (" WARNING: their private booking channel could NOT be set "
                             "up — tell them there's a technical hiccup on the booking "
                             "side right now; recommendations still work fine.")
+
+    async def _send_welcome(self, account: Account, channel_id: str) -> None:
+        """First message in a fresh guest channel: a warm, PERSONAL welcome —
+        Koyuki already talked with them, so it names what they care about
+        (dossier notes), never a generic greeting. Grok writes it when
+        available (detached, off the call's critical path); otherwise a warm
+        template goes out inline."""
+        client, _listener = self._puffo
+        number = account.account_number
+        first = (account.name or "").split(" ")[0] or "friend"
+        trip = [n for _, n in self._store.read_doc(number, "trip.md")]
+        persona = [n for _, n in self._store.read_doc(number, "persona.md")]
+        companions = self._store.companions(number)
+
+        def template() -> str:
+            bits = [f"ようこそ, welcome {first}"
+                    + (f" — and {', '.join(c.title() for c in companions)} too" if companions else "")
+                    + "! This is your own little corner of Japan planning, with me, Koyuki."]
+            if trip:
+                bits.append("From our call I am already holding onto this: "
+                            + trip[-1].removeprefix("trip:").strip() + ".")
+            if persona:
+                bits.append("And I have not forgotten — "
+                            + persona[-1].removeprefix("personal:").removeprefix(
+                                "taste:").removeprefix("constraint:").strip() + ".")
+            bits.append("My booking partner sees this channel too, so plans and "
+                        "confirmations will land right here. またね!")
+            return " ".join(bits)
+
+        if self._grok is None:
+            try:
+                await client.send(template(), channel=channel_id)
+            except Exception:  # noqa: BLE001 - a failed welcome must never break auth
+                log.exception("welcome message failed for %s", channel_id)
+            return
+
+        notes = "\n".join(f"- {n}" for n in (persona + trip)[-12:])
+        send = client.send
+
+        async def compose_and_send() -> None:
+            try:
+                text = await self._grok.complete([
+                    {"role": "system", "content":
+                        "You are Koyuki, a warm Japanese-American travel host who has "
+                        "lived in Kobe for twenty years. You just finished a phone call "
+                        "with a guest and their private Japan-planning channel was "
+                        "created. Write the FIRST message in it: 3-4 sentences, plain "
+                        "text, no markdown. It must feel personal — weave in one or two "
+                        "specific things from your call notes, never a generic welcome. "
+                        "Mention that plans and booking confirmations land here and "
+                        "your booking partner reads along. A touch of Japanese "
+                        "(ようこそ, ね, またね) is welcome."},
+                    {"role": "user", "content":
+                        f"Guest: {account.name or 'a new friend'}"
+                        + (f", traveling with {', '.join(companions)}" if companions else "")
+                        + f"\nYour call notes:\n{notes or '- (no notes yet)'}"},
+                ], temperature=0.6, max_tokens=250)
+            except Exception:  # noqa: BLE001 - fall back to the handwritten warmth
+                log.exception("grok welcome failed — sending template")
+                text = template()
+            try:
+                await send(text.strip(), channel=channel_id)
+            except Exception:  # noqa: BLE001
+                log.exception("welcome message failed for %s", channel_id)
+
+        self._welcome_task = asyncio.create_task(compose_and_send(), name="welcome")
 
     async def _send_caller_context(self, account: Account, channel_id: str) -> None:
         """The profile brief goes out IMMEDIATELY (same reply as the verify result);

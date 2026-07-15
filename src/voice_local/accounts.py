@@ -218,6 +218,11 @@ class AccountStore:
             legacy.unlink()
         return moved
 
+    def companions(self, account_number: str) -> list[str]:
+        """Named travel companions with their own dossier page ('mark kim', ...)."""
+        return [p.stem.replace("_", " ") for p in self._docs(account_number)
+                if p.name not in ("persona.md", "trip.md")]
+
     def profile_brief(self, account_number: str) -> str:
         """The dossier as caller context, injected whenever the account loads:
         header + persona + one section per companion + the trip. ALL notes ride

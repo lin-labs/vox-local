@@ -11,7 +11,7 @@ Wraps the `puffo` CLI binary via asyncio subprocesses:
   pattern as EventBus, but bounded). Auto-restarts with backoff if it dies.
 
 Threading model: each caller gets a channel PER DESTINATION, named
-``<destination-slug>-<account_number>`` inside the bot-owned space (see
+``<account_number>-<first-name>`` inside the bot-owned space (see
 ``ensure_user_channel``; ids persist in the account's ``channels``). Inside that
 channel each trip gets a ROOT message named
 ``<location>-<startDate>-<days>-<reason-slug>`` (no account id — the thread name is
@@ -222,18 +222,20 @@ async def ensure_user_channel(client: PuffoClient, store, account, destination: 
                               invite_slugs: list[str] | None = None) -> str:
     """The caller's per-destination channel id, creating it on first use.
 
-    Channels are named ``<destination-slug>-<account_number>`` (e.g. japan-470400)
-    inside the bot-owned space; the standing membership (`invite_slugs`, always
-    including the fulfiller) is invited so the humans and agents who coordinate
-    bookings see every new guest channel. The mapping is persisted on the account
-    keyed by destination slug. On creation failure the client's default (shared)
-    channel is returned — booking degrades to the old single-channel behavior
-    rather than breaking the call."""
+    Channels are named ``<account_number>-<first-name>`` (e.g. 470400-mika) —
+    the whole space is about Japan already, so the guest's name is the warm,
+    non-redundant label — inside the bot-owned space; the standing membership
+    (`invite_slugs`, always including the fulfiller) is invited so the humans
+    and agents who coordinate bookings see every new guest channel. The mapping
+    is persisted on the account keyed by destination slug. On creation failure
+    the client's default (shared) channel is returned — booking degrades to the
+    old single-channel behavior rather than breaking the call."""
     slug = _slug(destination)
     existing = account.channels.get(slug, "")
     if existing:
         return existing
-    name = f"{slug}-{account.account_number}"
+    first = _slug((account.name or "").split(" ")[0]) if account.name else ""
+    name = f"{account.account_number}-{first}" if first else account.account_number
     channel_id = await client.create_channel(name, space_id)
     if not channel_id:
         log.warning("could not create user channel %r — falling back to the shared "

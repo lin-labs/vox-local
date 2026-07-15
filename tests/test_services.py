@@ -365,3 +365,28 @@ def test_verify_preloads_destination_guide(conn, store):
                        space_id="sp_test", send=send)
     out = q(svc, op="verify", pin="4242")
     assert "verified" in out and "[City guide: kobe" in out
+
+
+def test_channel_named_after_guest_with_personal_welcome(conn, store, fake_puffo):
+    client = PuffoClient(bin=fake_puffo["bin"], server_url="https://fake/relay",
+                         channel_id="ch_shared", identity="bot")
+
+    async def send(action, payload):
+        pass
+
+    svc = CallServices(conn=conn, store=store, puffo=(client, PuffoListener(client)),
+                       caller_id="+15550003333", destination="japan", grok=None,
+                       fulfiller_slug=FULFILLER, space_id="sp_test", send=send)
+    q(svc, op="remember", note="trip: Hakone onsen, mid-November, two people")
+    q(svc, op="remember", note="taste: quiet mornings, hates crowds")
+    q(svc, op="register", name="Mika Tanaka")
+    acct = next(a for a in store.load_all() if a.name == "Mika Tanaka")
+    calls = _sent(fake_puffo)
+    create = next(c for c in calls if "channel" in c and "create" in c)
+    assert f"{acct.account_number}-mika" in create   # warm name, no japan- prefix
+    welcome = next(c for c in calls if "send" in c and "ようこそ" in " ".join(c))
+    text = " ".join(welcome)
+    assert "Mika" in text and "Hakone onsen" in text and "quiet mornings" in text
+    # reuse: second _ensure_channel must NOT send another welcome
+    n_sends = sum(1 for c in calls if "send" in c and "ようこそ" in " ".join(c))
+    assert n_sends == 1

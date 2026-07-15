@@ -37,8 +37,10 @@ The legacy markdown-era docs live in
    across hangups — without rushing anyone toward an account. Registration
    promotes the parked number to a full account (only then is the booking
    channel created); verifying into an existing account merges the dossier in.
-3. **Puffo booking coordination** — per-guest destination channels
-   (`kobe-<account>`), one short thread per trip
+3. **Puffo booking coordination** — per-guest destination channels named after
+   the guest (`<account>-<first-name>`, e.g. `470400-mika` — the space is
+   already about Japan), opened with a personal welcome message drawn from the
+   call dossier (Grok-written when available), one short thread per trip
    (`[booking] kobe 2026-12-15 2 days`), tagged requests
    (`[booking-explore|confirmed|update|canceled]`), async fulfiller replies
    relayed into the live call, and a consolidated `[booking-itinerary]` posted
