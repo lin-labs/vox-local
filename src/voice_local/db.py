@@ -232,11 +232,13 @@ def ensure_profile(conn: sqlite3.Connection, account: str, *, name: str = "",
 _NOTE_TOPICS = ("personal", "trip", "taste", "constraint", "reaction")
 
 
-def profile_brief(conn: sqlite3.Connection, account: str, *, max_notes: int = 30) -> str:
+def profile_brief(conn: sqlite3.Connection, account: str, *, max_notes: int = 30,
+                  extra_notes: list[tuple[str, str]] | None = None) -> str:
     """The warm-start text injected post-verify: header line + profile body +
-    the notebook, grouped by topic prefix and deduped (newest window first,
-    oldest first within each topic). Empty string when the guest has no
-    profile yet."""
+    the notebook, grouped by topic prefix and deduped (chronological within
+    each topic — the NEWEST trip/personal line is the current truth).
+    `extra_notes` merges the account folder's notes.txt [(ts, note), ...] with
+    any legacy DB notes. Empty string when the guest has no profile yet."""
     row = conn.execute("SELECT * FROM profiles WHERE account = ?", (account,)).fetchone()
     if row is None:
         return ""
@@ -245,13 +247,17 @@ def profile_brief(conn: sqlite3.Connection, account: str, *, max_notes: int = 30
         if row[field]:
             head += f", {field.replace('_', ' ')} {row[field]}"
     head += ")"
-    notes = conn.execute(
+    db_notes = conn.execute(
         "SELECT ts, note FROM notes WHERE account = ? ORDER BY id DESC LIMIT ?",
         (account, max_notes)).fetchall()
+    combined = [(n["ts"] or "", n["note"] or "") for n in reversed(db_notes)]
+    combined += list(extra_notes or [])
+    combined.sort(key=lambda n: n[0])   # ts strings sort chronologically
+    combined = combined[-max_notes:]
     grouped: dict[str, list[str]] = {t: [] for t in (*_NOTE_TOPICS, "notes")}
     seen: set[str] = set()
-    for n in reversed(notes):          # oldest first within the recent window
-        text = (n["note"] or "").strip()
+    for ts, raw in combined:            # oldest first within the recent window
+        text = raw.strip()
         topic, _, rest = text.partition(":")
         if topic.strip().lower() in _NOTE_TOPICS and rest.strip():
             topic, text = topic.strip().lower(), rest.strip()
@@ -261,13 +267,14 @@ def profile_brief(conn: sqlite3.Connection, account: str, *, max_notes: int = 30
         if not key or key in seen:
             continue
         seen.add(key)
-        grouped[topic].append(f"- {text} ({n['ts'][:10]})")
+        grouped[topic].append(f"- {text} ({ts[:10]})" if ts else f"- {text}")
     sections = [f"{t}:\n" + "\n".join(lines) for t, lines in grouped.items() if lines]
     parts = [head]
     if (row["body"] or "").strip():
         parts.append(row["body"].strip())
     if sections:
-        parts.append("Notebook:\n" + "\n".join(sections))
+        parts.append("Notebook (chronological; the newest line in each topic is the "
+                     "current truth):\n" + "\n".join(sections))
     return "\n\n".join(parts)
 
 

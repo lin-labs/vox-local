@@ -1,6 +1,10 @@
 """Accounts — the inbound-call customer registry + PIN auth gate.
 
-One JSON file per account under ``<state>/accounts/<account_number>.json``.
+One FOLDER per account under ``<state>/accounts/<account_number>/`` holding
+``account.json`` (identity, phones, channels) and ``notes.txt`` (the host's
+notebook — one timestamped line per remembered fact, kept OUT of the
+git-committed gems DB because it is caller-private). Legacy flat
+``<number>.json`` files are still read and migrate to folders on next save.
 Caller-ID lookup happens SILENTLY when a call connects: a match only shortcuts
 which account the PIN is checked against — the service must never reveal which
 account (if any) a caller-ID matched. ``AuthGate`` owns the per-call attempt
@@ -10,8 +14,10 @@ of the voice brain.
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import re
+import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -45,20 +51,28 @@ def _digits(number: str) -> str:
 
 
 class AccountStore:
-    """Load/lookup/save accounts under one directory (created lazily on save)."""
+    """Load/lookup/save accounts under one directory (created lazily on save),
+    one folder per account: <dir>/<number>/account.json + notes.txt."""
 
     def __init__(self, dir: str | Path) -> None:
         self.dir = Path(dir)
 
+    def _folder(self, account_number: str) -> Path:
+        return self.dir / str(account_number).strip()
+
     def load_all(self) -> list[Account]:
         if not self.dir.is_dir():
             return []
-        out = []
-        for p in sorted(self.dir.glob("*.json")):
+        out, seen = [], set()
+        # Folder layout first so it wins over a stale legacy flat file.
+        for p in sorted(self.dir.glob("*/account.json")) + sorted(self.dir.glob("*.json")):
             try:
-                out.append(Account.from_dict(json.loads(p.read_text())))
+                a = Account.from_dict(json.loads(p.read_text()))
             except (ValueError, TypeError):  # skip malformed files, never break call setup
                 continue
+            if a.account_number not in seen:
+                seen.add(a.account_number)
+                out.append(a)
         return out
 
     def get(self, account_number: str) -> Account | None:
@@ -85,15 +99,57 @@ class AccountStore:
         return None
 
     def save(self, account: Account) -> Path:
-        self.dir.mkdir(parents=True, exist_ok=True)
-        p = self.dir / f"{account.account_number}.json"
+        folder = self._folder(account.account_number)
+        folder.mkdir(parents=True, exist_ok=True)
+        p = folder / "account.json"
         p.write_text(json.dumps(account.to_dict(), indent=2, ensure_ascii=False))
+        legacy = self.dir / f"{account.account_number}.json"
+        if legacy.exists():   # migrate the flat layout on first save
+            legacy.unlink()
         return p
 
     def remove(self, account_number: str) -> None:
-        p = self.dir / f"{account_number}.json"
+        folder = self._folder(account_number)
+        if folder.is_dir():
+            shutil.rmtree(folder)
+        legacy = self.dir / f"{account_number}.json"
+        if legacy.exists():
+            legacy.unlink()
+
+    # ---- the notebook (notes.txt beside account.json) ---------------------------
+
+    def append_note(self, account_number: str, note: str, *, ts: str = "") -> None:
+        folder = self._folder(account_number)
+        folder.mkdir(parents=True, exist_ok=True)
+        ts = ts or _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+        with (folder / "notes.txt").open("a", encoding="utf-8") as f:
+            f.write(f"{ts} | {' '.join(str(note).split())}\n")
+
+    def read_notes(self, account_number: str) -> list[tuple[str, str]]:
+        """[(ts, note), ...] oldest first; tolerant of hand-edited lines."""
+        p = self._folder(account_number) / "notes.txt"
+        if not p.exists():
+            return []
+        out = []
+        for line in p.read_text(encoding="utf-8").splitlines():
+            ts, sep, text = line.partition(" | ")
+            if sep and text.strip():
+                out.append((ts.strip(), text.strip()))
+            elif line.strip():
+                out.append(("", line.strip()))
+        return out
+
+    def move_notes(self, account_number: str, target: "AccountStore",
+                   target_number: str) -> int:
+        """Append this account's notes onto the target's notebook (timestamps
+        preserved) and drop the source file. Returns how many moved."""
+        notes = self.read_notes(account_number)
+        for ts, text in notes:
+            target.append_note(target_number, text, ts=ts)
+        p = self._folder(account_number) / "notes.txt"
         if p.exists():
             p.unlink()
+        return len(notes)
 
 
 class AuthGate:

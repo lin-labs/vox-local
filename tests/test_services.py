@@ -150,8 +150,7 @@ def test_remember_dedupes_and_writes_notes(conn, store):
     q(svc, op="verify", pin="4242")
     assert "SILENT" in q(svc, op="remember", note="loves quiet mornings")
     assert "SILENT" in q(svc, op="remember", note="loves quiet mornings")  # dupe
-    notes = conn.execute("SELECT note FROM notes WHERE account='123456'").fetchall()
-    assert len(notes) == 1
+    assert [n for _, n in store.read_notes("123456")] == ["loves quiet mornings"]
 
 
 def test_add_gem_from_caller(conn, store):
@@ -252,7 +251,8 @@ def test_notebook_notes_flush_into_profile_on_register(conn, store, fake_puffo):
     assert "SILENT" in q(svc, op="remember", note="two people, loves onsen")
     q(svc, op="register", name="Mika Sato")
     acct = next(a for a in store.load_all() if a.name == "Mika Sato")
-    brief = db.profile_brief(conn, acct.account_number)
+    brief = db.profile_brief(conn, acct.account_number,
+                             extra_notes=store.read_notes(acct.account_number))
     assert "Tokyo then Hakone" in brief and "loves onsen" in brief  # no re-asking
 
 
@@ -275,9 +275,9 @@ def test_pre_account_note_parks_a_pending_account(conn, store, tmp_path):
     q(svc, op="remember", note="loves quiet onsen mornings")
     parked = pending_store.lookup_by_phone("+15550001111")
     assert parked is not None and parked.pin == ""
-    notes = conn.execute("SELECT note FROM notes WHERE account=?",
-                         (parked.account_number,)).fetchall()
-    assert [n["note"] for n in notes] == ["loves quiet onsen mornings"]
+    assert (pending_store.dir / parked.account_number / "notes.txt").exists()
+    assert [n for _, n in pending_store.read_notes(parked.account_number)] == [
+        "loves quiet onsen mornings"]
 
 
 def test_register_promotes_pending_number_and_clears_parking(conn, store, tmp_path):
@@ -291,9 +291,7 @@ def test_register_promotes_pending_number_and_clears_parking(conn, store, tmp_pa
     row = conn.execute("SELECT name FROM profiles WHERE account=?",
                        (parked.account_number,)).fetchone()
     assert row["name"] == "Mika Tanaka"
-    notes = conn.execute("SELECT note FROM notes WHERE account=?",
-                         (parked.account_number,)).fetchall()
-    assert len(notes) == 1
+    assert len(store.read_notes(parked.account_number)) == 1   # notebook moved over
 
 
 def test_verify_migrates_pending_notes_into_existing_account(conn, store, tmp_path):
@@ -301,14 +299,12 @@ def test_verify_migrates_pending_notes_into_existing_account(conn, store, tmp_pa
     svc, pending_store = _pending_services(conn, store, tmp_path, caller_id=BOYAN)
     parked = Account(account_number="777777", pin="", name="", phones=[BOYAN])
     pending_store.save(parked)
-    db.add_note(conn, "777777", "wants a Fuji-side seat")
+    pending_store.append_note("777777", "wants a Fuji-side seat")
     svc._pending_account = pending_store.lookup_by_phone(BOYAN)
     q(svc, op="verify", pin="4242")
     assert svc.gate.verified.account_number == "123456"
-    moved = conn.execute("SELECT note FROM notes WHERE account='123456'").fetchall()
-    assert "wants a Fuji-side seat" in [n["note"] for n in moved]
-    assert conn.execute("SELECT count(*) FROM notes WHERE account='777777'"
-                        ).fetchone()[0] == 0
+    assert "wants a Fuji-side seat" in [n for _, n in store.read_notes("123456")]
+    assert pending_store.read_notes("777777") == []
     assert pending_store.get("777777") is None
 
 

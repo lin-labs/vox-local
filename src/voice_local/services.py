@@ -155,7 +155,10 @@ class CallServices:
         if (self._pending_account is not None and not self._pending_context_sent
                 and self.gate.matched is None and self.gate.verified is None):
             self._pending_context_sent = True
-            brief = kb.profile_brief(self._conn, self._pending_account.account_number)
+            brief = kb.profile_brief(
+                self._conn, self._pending_account.account_number,
+                extra_notes=self._pending_store.read_notes(
+                    self._pending_account.account_number))
             if brief:
                 await self._send("caller_context", {
                     "brief": "Returning caller with NO account yet — notebook from "
@@ -367,7 +370,8 @@ class CallServices:
         the trip parse — a whole-channel LLM read that grows with channel history —
         runs detached and rides a LATER reply via the pending queue. Blocking verify
         on it once exceeded VB's tool timeout and deadlocked a live call."""
-        brief = kb.profile_brief(self._conn, account.account_number)
+        brief = kb.profile_brief(self._conn, account.account_number,
+                                 extra_notes=self._store.read_notes(account.account_number))
         await self._send("caller_context", {"brief": brief, "trip_summary": ""})
         if self._grok is None or self._puffo is None or not channel_id:
             return
@@ -493,18 +497,18 @@ class CallServices:
             # — never re-ask the caller.
             pending = self._ensure_pending_account()
             if pending is not None:
-                kb.add_note(self._conn, pending.account_number, note)
+                self._pending_store.append_note(pending.account_number, note)
             else:
                 self._pending_notes.append(note)
         else:
-            kb.add_note(self._conn, self.gate.verified.account_number, note)
+            self._store.append_note(self.gate.verified.account_number, note)
         await self._send("kb_result", {
             "ok": True, "data": None,
             "say_hint": "SILENT: noted — say nothing about this; continue naturally."})
 
     def _flush_notes(self, account_number: str) -> None:
         for note in self._pending_notes:
-            kb.add_note(self._conn, account_number, note)
+            self._store.append_note(account_number, note)
         if self._pending_notes:
             log.info("flushed %d pre-account notes to %s",
                      len(self._pending_notes), account_number)
@@ -532,12 +536,15 @@ class CallServices:
         if self._pending_account is None or self._pending_store is None:
             return
         old = self._pending_account.account_number
+        moved = self._pending_store.move_notes(old, self._store, account_number)
         if old != account_number:
+            # Legacy rows from before notebooks moved to notes.txt.
             self._conn.execute("UPDATE notes SET account=? WHERE account=?",
                                (account_number, old))
             self._conn.execute("DELETE FROM profiles WHERE account=?", (old,))
             self._conn.commit()
-            log.info("migrated pending notes %s -> %s", old, account_number)
+        if moved or old != account_number:
+            log.info("adopted pending %s -> %s (%d notes)", old, account_number, moved)
         self._pending_store.remove(old)
         self._pending_account = None
 
