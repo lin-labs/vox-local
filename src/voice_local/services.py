@@ -92,6 +92,10 @@ class CallServices:
         self._space_id = space_id
         self._send = send              # async (action, payload) -> queue for the reply
         self._seen_notes: set[str] = set()
+        # The host's notebook: notes taken BEFORE an account exists are buffered for
+        # the call and flushed into the profile the moment an account is created or
+        # verified — the caller is never asked to repeat what they already said.
+        self._pending_notes: list[str] = []
         matched = store.lookup_by_phone(caller_id) if caller_id else None
         self.gate = AuthGate(store, matched=matched)
         self.booking: BookingSession | None = None
@@ -217,6 +221,7 @@ class CallServices:
                         f"making them re-explain their tastes or bookings. {_today_line()} "
                         "Resolve every relative date ('January', 'next week') against "
                         "TODAY — never into the past."})
+        self._flush_notes(account.account_number)
         channel_id, channel_warn = await self._ensure_channel(account)
         if channel_warn:
             await self._send("auth_result", {"ok": True, "say_hint": channel_warn.strip()})
@@ -244,6 +249,7 @@ class CallServices:
         self._store.save(account)
         kb.ensure_profile(self._conn, number, name=name, phone=self._caller_id)
         self.gate.verified = account
+        self._flush_notes(number)
         channel_id, channel_warn = await self._ensure_channel(account)
         self._start_booking(account, channel_id)
         phone_line = (f"Their account is linked to the number they're calling from "
@@ -392,19 +398,29 @@ class CallServices:
                          "no such gem — re-run search_gems and use an id from the results.")})
 
     async def _kb_remember(self, payload: dict) -> None:
-        if (refuse := self._kb_gate_hint()) is not None:
-            await self._send("kb_result", refuse)
-            return
         note = str(payload.get("note", "")).strip()
         note_key = " ".join(note.lower().split())
         if not note or note_key in self._seen_notes:
             log.info("duplicate/empty remember note ignored")
             return
         self._seen_notes.add(note_key)
-        kb.add_note(self._conn, self.gate.verified.account_number, note)
+        if self.gate.verified is None:
+            # No account yet: the note goes in the notebook and lands on the profile
+            # automatically at register/verify — never re-ask the caller.
+            self._pending_notes.append(note)
+        else:
+            kb.add_note(self._conn, self.gate.verified.account_number, note)
         await self._send("kb_result", {
             "ok": True, "data": None,
             "say_hint": "SILENT: noted — say nothing about this; continue naturally."})
+
+    def _flush_notes(self, account_number: str) -> None:
+        for note in self._pending_notes:
+            kb.add_note(self._conn, account_number, note)
+        if self._pending_notes:
+            log.info("flushed %d pre-account notes to %s",
+                     len(self._pending_notes), account_number)
+        self._pending_notes.clear()
 
     async def _kb_add(self, payload: dict) -> None:
         if (refuse := self._kb_gate_hint()) is not None:

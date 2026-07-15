@@ -132,8 +132,10 @@ def test_kb_reads_are_open_writes_are_gated(conn, store):
     out = q(svc, op="search_gems", city="kobe", query="quiet onsen")
     assert "kobe-kin-no-yu" in out
     assert "650 yen" in q(svc, op="get_gem", id="kin_no_yu")
-    # memory/gem-writes still need one — refusal offers the account, gently
-    assert "needs an account" in q(svc, op="remember", note="loves onsen")
+    # remember works pre-account (the host's notebook — buffered, flushed later);
+    # gem contributions still need a verified account
+    assert "SILENT" in q(svc, op="remember", note="loves onsen")
+    assert svc._pending_notes == ["loves onsen"]
     assert "needs an account" in q(svc, op="add_gem", name="X", city="kobe", pitch="Y")
     q(svc, op="verify", pin="4242")
     out = q(svc, op="search_gems", city="kobe", query="quiet onsen")
@@ -234,3 +236,21 @@ def test_agent_passed_wrong_phone_still_needs_account_number(conn, store):
     out = q(svc, op="verify", caller_phone="+19990001111", pin="4242")
     assert "ACCOUNT NUMBER" in out   # no match -> unknown-caller path, no burn
     assert svc.gate.attempts == 0
+
+
+def test_notebook_notes_flush_into_profile_on_register(conn, store, fake_puffo):
+    client = PuffoClient(bin=fake_puffo["bin"], server_url="https://fake/relay",
+                         channel_id="ch_test", identity="bot")
+    async def send(action, payload):
+        pass
+
+    svc = CallServices(conn=conn, store=store, puffo=(client, PuffoListener(client)),
+                       caller_id="+15550002222", destination="", grok=None,
+                       fulfiller_slug=FULFILLER, space_id="sp_test", send=send)
+    # notes BEFORE any account: buffered silently, never refused
+    assert "SILENT" in q(svc, op="remember", note="wants Tokyo then Hakone in November")
+    assert "SILENT" in q(svc, op="remember", note="two people, loves onsen")
+    q(svc, op="register", name="Mika Sato")
+    acct = next(a for a in store.load_all() if a.name == "Mika Sato")
+    brief = db.profile_brief(conn, acct.account_number)
+    assert "Tokyo then Hakone" in brief and "loves onsen" in brief  # no re-asking
