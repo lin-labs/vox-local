@@ -359,7 +359,7 @@ class BookingSession:
 
     async def _publish(self, name: str, args: dict) -> None:
         """Observability seam: `bus` is any object with `async publish(name, args)`
-        (voice-local has no event bus of its own; None is the norm)."""
+        (vox-local has no event bus of its own; None is the norm)."""
         if self._bus is not None:
             await self._bus.publish(name, args)
 

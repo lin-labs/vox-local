@@ -1260,7 +1260,7 @@ wheels = [
 ]
 
 [[package]]
-name = "voice-local"
+name = "vox-local"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

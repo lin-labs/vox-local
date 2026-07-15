@@ -3,7 +3,7 @@ file that is committed to git (data/gems.db) — the repo IS the distribution
 channel for curated local knowledge, exactly like the markdown files it
 replaces. Writers on the serving box commit/push to publish.
 
-Import path: `voice-local import-md kb/` parses the legacy concierge-kb
+Import path: `vox-local import-md kb/` parses the legacy concierge-kb
 markdown (frontmatter + body) so the pivot loses nothing.
 """
 
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS gems (
     details TEXT DEFAULT ''           -- longer notes (hours, budget, insider)
 );
 CREATE TABLE IF NOT EXISTS profiles (
-    account   TEXT PRIMARY KEY,       -- voice-local account number
+    account   TEXT PRIMARY KEY,       -- vox-local account number
     name      TEXT DEFAULT '',
     phones    TEXT DEFAULT '',        -- comma-separated E.164
     home_city TEXT DEFAULT '',

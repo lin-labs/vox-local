@@ -1,7 +1,7 @@
 [project]
-name = "voice-local"
+name = "vox-local"
 version = "0.1.0"
-description = "voice-local — local-knowledge MCP backend for Vocal Bridge voice agents: hidden-gem data bag (SQLite), guest accounts, and Puffo booking coordination"
+description = "vox-local — local-knowledge MCP backend for Vocal Bridge voice agents: hidden-gem data bag (SQLite), guest accounts, and Puffo booking coordination"
 requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.9",
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-voice-local = "voice_local.cli:main"
+vox-local = "voice_local.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]

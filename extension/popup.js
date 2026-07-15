@@ -1,4 +1,4 @@
-// Prefill from the active tab (title + selection), POST to voice-local /api/gems.
+// Prefill from the active tab (title + selection), POST to vox-local /api/gems.
 
 const $ = (id) => document.getElementById(id);
 

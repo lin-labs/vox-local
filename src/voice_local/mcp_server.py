@@ -1,4 +1,4 @@
-"""voice-local's serving surface: the Vocal Bridge MCP backend plus the small
+"""vox-local's serving surface: the Vocal Bridge MCP backend plus the small
 HTTP API the browser extension and ops tooling use.
 
 Endpoints on one port:
@@ -254,7 +254,7 @@ def build_app(backend: VBBackend, *, conn, version: str, vb_phone_number: str = 
         hosts += [public_host, f"{public_host}:*"]
         origins += [f"https://{public_host}"]
     security = TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=origins)
-    mcp = FastMCP("voice-local", stateless_http=True, transport_security=security)
+    mcp = FastMCP("vox-local", stateless_http=True, transport_security=security)
 
     @mcp.tool(description=TOOL_DESCRIPTION)
     async def query_backend(query: str) -> str:  # noqa: ANN001
@@ -268,9 +268,9 @@ def build_app(backend: VBBackend, *, conn, version: str, vb_phone_number: str = 
         try:
             n_gems = conn.execute("SELECT count(*) FROM gems").fetchone()[0]
         except Exception:  # noqa: BLE001 - a broken DB is exactly what healthz reports
-            return JSONResponse({"ok": False, "service": "voice-local",
+            return JSONResponse({"ok": False, "service": "vox-local",
                                  "version": version, "error": "db"}, status_code=503)
-        return JSONResponse({"ok": True, "service": "voice-local", "version": version,
+        return JSONResponse({"ok": True, "service": "vox-local", "version": version,
                              "gems": n_gems, "live_calls": backend.live_calls})
 
     @mcp.custom_route("/twilio-forward", methods=["GET", "POST"])

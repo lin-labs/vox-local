@@ -7,7 +7,7 @@ description: Query and maintain the shared concierge knowledge base — hidden-g
 
 ## Locate the knowledge base (do this first)
 
-This skill ships inside the `voice-local` repo at `skills/local-guide/`, so
+This skill ships inside the `vox-local` repo at `skills/local-guide/`, so
 the repo root is **two directories above this SKILL.md** — resolve symlinks,
 since agent homes often symlink skill directories:
 

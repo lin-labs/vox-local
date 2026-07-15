@@ -1,14 +1,14 @@
-"""voice-local CLI.
+"""vox-local CLI.
 
-  voice-local serve                       # the VB MCP backend + HTTP API daemon
-  voice-local import-md kb/               # one-shot legacy markdown -> SQLite
-  voice-local gems list [--city kobe]     # inspect the data bag
-  voice-local gems add --name ... --city ... --pitch ...
-  voice-local account add --account 123456 --pin 4242 --name ... --phone +1650...
+  vox-local serve                         # the VB MCP backend + HTTP API daemon
+  vox-local import-md kb/                 # one-shot legacy markdown -> SQLite
+  vox-local gems list [--city kobe]       # inspect the data bag
+  vox-local gems add --name ... --city ... --pitch ...
+  vox-local account add --account 123456 --pin 4242 --name ... --phone +1650...
 
 Config is environment-driven (~/.env then ./.env, latter wins):
   VOICE_LOCAL_PORT (7780)   VOICE_LOCAL_DB (<repo>/data/gems.db)
-  VOICE_LOCAL_STATE (~/data/Projects/voice-local)
+  VOICE_LOCAL_STATE (~/data/Projects/vox-local)
   VOICE_LOCAL_GEMS_TOKEN    VB_PUBLIC_URL   VB_AGENT_ID   VB_PHONE_NUMBER
   VOCAL_BRIDGE_API          XAI_API_KEY (trip-context parsing)
   PUFFO_BIN / PUFFO_SERVER_URL / PUFFO_IDENTITY / PUFFO_CHANNEL_ID /
@@ -48,7 +48,7 @@ def _db_path() -> Path:
 
 def _state_dir() -> Path:
     return Path(os.environ.get("VOICE_LOCAL_STATE",
-                               Path.home() / "data/Projects/voice-local"))
+                               Path.home() / "data/Projects/vox-local"))
 
 
 async def _run_serve(args) -> int:
@@ -96,7 +96,7 @@ async def _run_serve(args) -> int:
     backend = VBBackend(services_factory=services_factory, api_key=api_key,
                         agent_id=os.environ.get("VB_AGENT_ID", ""))
     try:
-        version = importlib.metadata.version("voice-local")
+        version = importlib.metadata.version("vox-local")
     except importlib.metadata.PackageNotFoundError:
         version = "dev"
     public_host = os.environ.get("VB_PUBLIC_URL", "").removeprefix(
@@ -107,7 +107,7 @@ async def _run_serve(args) -> int:
                     gems_token=os.environ.get("VOICE_LOCAL_GEMS_TOKEN", ""))
 
     n_gems = conn.execute("SELECT count(*) FROM gems").fetchone()[0]
-    print(f"  voice-local: 127.0.0.1:{port}/mcp  (gems: {n_gems}, "
+    print(f"  vox-local: 127.0.0.1:{port}/mcp  (gems: {n_gems}, "
           f"accounts: {len(store.load_all())}, booking: {'ON' if puffo else 'OFF'}, "
           f"destination: {destination})")
     if public_host:
@@ -130,7 +130,7 @@ async def _run_serve(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     _bootstrap_env()
-    parser = argparse.ArgumentParser(prog="voice-local")
+    parser = argparse.ArgumentParser(prog="vox-local")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("serve", help="run the VB MCP backend + HTTP API daemon")
