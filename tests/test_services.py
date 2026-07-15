@@ -322,3 +322,52 @@ def test_pending_notebook_resurfaces_on_next_call(conn, store, tmp_path):
     out = q(svc2, op="search_gems", city="hakone", query="ropeway")
     assert any(a == "caller_context" and "dreams of Hakone ropeway" in p.get("brief", "")
                for a, p in svc2._test_pending)
+
+
+def test_city_guide_rides_first_city_mention_once(conn, store):
+    svc = _services(conn, store)
+    out = q(svc, op="search_gems", city="kobe", query="onsen")
+    assert "[City guide: kobe" in out          # aggressive warm load, same reply
+    assert out.index("[City guide") < out.index("ground the recommendation")
+    out2 = q(svc, op="search_gems", city="kobe", query="wagyu")
+    assert "[City guide" not in out2           # once per city per call
+
+
+def test_city_guide_op_explicit_then_silent(conn, store):
+    svc = _services(conn, store)
+    out = q(svc, op="city_guide", city="Kobe city")
+    assert "[City guide: kobe" in out and "kobe-kin-no-yu" in out
+    assert "SILENT" in q(svc, op="city_guide", city="kobe")
+    assert "no notes on paris" in q(svc, op="city_guide", city="paris")
+
+
+def test_city_guide_follows_get_gem_city(conn, store):
+    db.add_gem(conn, name="Zuihoin", city="kyoto", pitch="Raked waves.", tags="temple")
+    svc = _services(conn, store)
+    out = q(svc, op="get_gem", id="kyoto-zuihoin")
+    assert "[City guide: kyoto" in out
+
+
+def test_city_guide_bypasses_data_truncation(conn, store):
+    for i in range(30):
+        db.add_gem(conn, name=f"Gem number {i} with a long name", city="osaka",
+                   pitch=f"A properly long one-breath pitch sentence number {i}.",
+                   tags=f"tag{i % 8},food", details="detail " * 40)
+    svc = _services(conn, store)
+    out = q(svc, op="city_guide", city="osaka")
+    guide_block = out[out.index("[City guide"):]
+    assert len(guide_block) > 1500             # would be lost under the data cap
+    assert guide_block.count("\n- ") + guide_block.count("\n") >= 30
+
+
+def test_verify_preloads_destination_guide(conn, store):
+    pending: list[tuple[str, dict]] = []
+
+    async def send(action, payload):
+        pending.append((action, payload))
+
+    svc = CallServices(conn=conn, store=store, puffo=None, caller_id=BOYAN,
+                       destination="kobe", grok=None, fulfiller_slug=FULFILLER,
+                       space_id="sp_test", send=send)
+    out = q(svc, op="verify", pin="4242")
+    assert "verified" in out and "[City guide: kobe" in out

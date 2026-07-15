@@ -156,6 +156,9 @@ def main(argv: list[str] | None = None) -> int:
     p_list = gems_sub.add_parser("list")
     p_list.add_argument("--city", default="")
     p_list.add_argument("--query", default="")
+    p_guide = gems_sub.add_parser("guide", help="print the [City guide] block the "
+                                                "agent receives for a city")
+    p_guide.add_argument("city")
     p_add = gems_sub.add_parser("add")
     for f in ("name", "city", "pitch"):
         p_add.add_argument(f"--{f}", required=True)
@@ -187,6 +190,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.gems_cmd == "list":
             for g in kbdb.search_gems(conn, city=args.city, query=args.query, limit=100):
                 print(f"{g['id']:<44} [{','.join(g['tags'])}] {g['pitch'][:70]}")
+            return 0
+        if args.gems_cmd == "guide":
+            guide = kbdb.city_guide(conn, kbdb.resolve_city(conn, args.city) or args.city)
+            if guide is None:
+                print(f"no gems for city: {args.city}")
+                return 1
+            print(guide)
             return 0
         if args.gems_cmd == "import-jsonl":
             failed = 0

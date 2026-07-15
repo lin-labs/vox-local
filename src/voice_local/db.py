@@ -99,6 +99,88 @@ def search_gems(conn: sqlite3.Connection, *, city: str = "", query: str = "",
     return [gem_to_dict(r) for _, r in scored[:limit]]
 
 
+# Day-trip orbits: towns a local mentally files under the anchor city. Guide
+# slots left over after the anchor's own gems fill from here, labeled by town.
+_ORBITS = {
+    "kobe": ["arima"],
+    "hakone": ["odawara", "atami", "yugawara", "gotemba", "mishima"],
+    "nagoya": ["gifu", "inuyama", "seto", "tokoname", "handa",
+               "okazaki", "gujo-hachiman"],
+}
+
+
+def resolve_city(conn: sqlite3.Connection, raw: str) -> str:
+    """Map free-form caller speech ('Hakone town', 'downtown Nagoya') to a known
+    gems city slug; empty string when nothing in the bag matches."""
+    slug = _slug(str(raw or ""))
+    if not slug:
+        return ""
+    cities = {r["city"] for r in conn.execute("SELECT DISTINCT city FROM gems")}
+    if slug in cities:
+        return slug
+    for city in sorted(cities, key=len, reverse=True):
+        if city in slug or (len(slug) >= 4 and slug in city):
+            return city
+    return ""
+
+
+def _guide_line(row: sqlite3.Row, *, day_trip: bool = False) -> str:
+    hook = re.split(r"(?<=[.!?])\s", (row["pitch"] or "").strip())[0][:110]
+    bits = [row["id"], row["name"]]
+    where = row["city"] if day_trip else (row["area"] or "")
+    if where:
+        bits.append(f"day trip: {where}" if day_trip else where)
+    tags = (row["tags"] or "").replace(",", " ")
+    if tags:
+        bits.append(tags)
+    return "- " + " | ".join(bits) + (f" — {hook}" if hook else "")
+
+
+def city_guide(conn: sqlite3.Connection, city: str, *, limit: int = 30) -> str | None:
+    """The agent's mental map of a city: the top `limit` gems as one compact
+    line each (id first, so get_gem is one hop away). Ranked by curation
+    richness with a per-tag cap so one theme can't flood the map, and a slice
+    of slots reserved for the city's day-trip orbit. None when the city is
+    unknown to the bag — the caller's guide has to be honest about that."""
+    city = _slug(city)
+    home = conn.execute("SELECT * FROM gems WHERE city = ?", (city,)).fetchall()
+    if not home:
+        return None
+    orbit: list[sqlite3.Row] = []
+    for town in _ORBITS.get(city, []):
+        orbit += conn.execute("SELECT * FROM gems WHERE city = ?", (town,)).fetchall()
+
+    def richness(row: sqlite3.Row) -> int:
+        return (len(row["details"] or "") + 2 * len(row["pitch"] or "")
+                + (200 if row["source"] == "curator" else 0))
+
+    def pick(rows: list[sqlite3.Row], n: int) -> list[sqlite3.Row]:
+        cap = max(3, n // 5)   # diversity guard: one leading tag can't flood the map
+        counts: dict[str, int] = {}
+        chosen, spill = [], []
+        for row in sorted(rows, key=richness, reverse=True):
+            bucket = ((row["tags"] or "").split(",")[0] or row["area"] or "misc")
+            if counts.get(bucket, 0) < cap and len(chosen) < n:
+                counts[bucket] = counts.get(bucket, 0) + 1
+                chosen.append(row)
+            else:
+                spill.append(row)
+        return chosen + spill[: n - len(chosen)]
+
+    n_orbit = min(len(orbit), max(limit // 4, limit - len(home))) if orbit else 0
+    picked_home = pick(home, limit - n_orbit)
+    picked_orbit = pick(orbit, n_orbit)
+    towns = sorted({r["city"] for r in picked_orbit})
+    head = (f"[City guide: {city} — {len(picked_home) + len(picked_orbit)} spots you "
+            f"know by heart{', with day trips to ' + ', '.join(towns) if towns else ''}. "
+            "This is YOUR OWN memory of the place — browse it silently; NEVER read it "
+            "out, list it, or mention a guide exists. Pick the one or two spots that "
+            "fit THIS caller, and query get_gem with the id BEFORE sharing specifics.]")
+    lines = [_guide_line(r) for r in picked_home]
+    lines += [_guide_line(r, day_trip=True) for r in picked_orbit]
+    return "\n".join([head, *lines])
+
+
 def get_gem(conn: sqlite3.Connection, gem_id: str) -> dict | None:
     row = conn.execute("SELECT * FROM gems WHERE id = ?", (gem_id,)).fetchone()
     if row is None:
@@ -145,9 +227,16 @@ def ensure_profile(conn: sqlite3.Connection, account: str, *, name: str = "",
     conn.commit()
 
 
-def profile_brief(conn: sqlite3.Connection, account: str, *, max_notes: int = 6) -> str:
+# Notebook topics: the agent prefixes each note ("trip: two people mid-November")
+# so recall groups cleanly. Unprefixed notes land under "notes".
+_NOTE_TOPICS = ("personal", "trip", "taste", "constraint", "reaction")
+
+
+def profile_brief(conn: sqlite3.Connection, account: str, *, max_notes: int = 30) -> str:
     """The warm-start text injected post-verify: header line + profile body +
-    recent notes. Empty string when the guest has no profile yet."""
+    the notebook, grouped by topic prefix and deduped (newest window first,
+    oldest first within each topic). Empty string when the guest has no
+    profile yet."""
     row = conn.execute("SELECT * FROM profiles WHERE account = ?", (account,)).fetchone()
     if row is None:
         return ""
@@ -159,12 +248,26 @@ def profile_brief(conn: sqlite3.Connection, account: str, *, max_notes: int = 6)
     notes = conn.execute(
         "SELECT ts, note FROM notes WHERE account = ? ORDER BY id DESC LIMIT ?",
         (account, max_notes)).fetchall()
-    note_lines = [f"- {n['ts']}: {n['note']}" for n in reversed(notes)]
+    grouped: dict[str, list[str]] = {t: [] for t in (*_NOTE_TOPICS, "notes")}
+    seen: set[str] = set()
+    for n in reversed(notes):          # oldest first within the recent window
+        text = (n["note"] or "").strip()
+        topic, _, rest = text.partition(":")
+        if topic.strip().lower() in _NOTE_TOPICS and rest.strip():
+            topic, text = topic.strip().lower(), rest.strip()
+        else:
+            topic = "notes"
+        key = " ".join(text.lower().split())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        grouped[topic].append(f"- {text} ({n['ts'][:10]})")
+    sections = [f"{t}:\n" + "\n".join(lines) for t, lines in grouped.items() if lines]
     parts = [head]
     if (row["body"] or "").strip():
         parts.append(row["body"].strip())
-    if note_lines:
-        parts.append("Recent notes:\n" + "\n".join(note_lines))
+    if sections:
+        parts.append("Notebook:\n" + "\n".join(sections))
     return "\n\n".join(parts)
 
 

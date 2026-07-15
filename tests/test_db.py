@@ -99,3 +99,70 @@ def test_import_jsonl_seeds_and_reports_errors(tmp_path):
     # idempotent upsert
     assert db.import_jsonl(conn, f)["imported"] == 2
     assert conn.execute("SELECT count(*) FROM gems").fetchone()[0] == 2
+
+
+def test_profile_brief_groups_topic_notes(tmp_path):
+    conn = _conn(tmp_path)
+    db.ensure_profile(conn, "555555", name="Mika")
+    db.add_note(conn, "555555", "trip: mid-November, two people")
+    db.add_note(conn, "555555", "taste: quiet onsen, hates crowds")
+    db.add_note(conn, "555555", "taste: quiet onsen, hates crowds")   # dupe collapses
+    db.add_note(conn, "555555", "just rambling context")              # unprefixed
+    db.add_note(conn, "555555", "trip: now 3 nights in Hakone, was 2")
+    brief = db.profile_brief(conn, "555555")
+    assert brief.count("quiet onsen") == 1
+    trip_block = brief.split("trip:\n")[1].split("taste:")[0]
+    assert "mid-November" in trip_block and "now 3 nights" in trip_block
+    assert "notes:\n- just rambling context" in brief
+
+
+def test_resolve_city_exact_fuzzy_and_miss(tmp_path):
+    conn = _conn(tmp_path)
+    db.add_gem(conn, name="A", city="hakone", pitch="x.")
+    db.add_gem(conn, name="B", city="gujo-hachiman", pitch="y.")
+    assert db.resolve_city(conn, "Hakone") == "hakone"
+    assert db.resolve_city(conn, "Hakone town") == "hakone"
+    assert db.resolve_city(conn, "gujo") == "gujo-hachiman"
+    assert db.resolve_city(conn, "paris") == ""
+    assert db.resolve_city(conn, "") == ""
+
+
+def test_city_guide_caps_ranks_and_labels(tmp_path):
+    conn = _conn(tmp_path)
+    for i in range(40):
+        db.add_gem(conn, name=f"Spot {i}", city="nagoya", pitch=f"Pitch {i}.",
+                   tags=f"tag{i % 12}", details="d" * (i * 10))
+    guide = db.city_guide(conn, "nagoya")
+    lines = guide.splitlines()
+    assert lines[0].startswith("[City guide: nagoya — 30 spots")
+    assert len(lines) == 31  # header + 30
+    # richest gem (i=39) made the cut; poorest (i=0) did not
+    assert any("nagoya-spot-39" in line for line in lines)
+    assert db.city_guide(conn, "atlantis") is None
+
+
+def test_city_guide_diversity_guard(tmp_path):
+    conn = _conn(tmp_path)
+    # 20 rich same-tag gems + 10 poorer varied ones; the cap must let variety in
+    for i in range(20):
+        db.add_gem(conn, name=f"Ramen {i}", city="tokyo", pitch="Slurp.",
+                   tags="ramen", details="d" * 500)
+    for i in range(10):
+        db.add_gem(conn, name=f"Other {i}", city="tokyo", pitch="Nice.",
+                   tags=f"vibe{i}", details="d" * 10)
+    guide = db.city_guide(conn, "tokyo")
+    body = guide.splitlines()[1:]
+    assert sum ("| ramen" in line for line in body) <= 20
+    assert any("vibe0" in line for line in body)  # variety survived the flood
+
+
+def test_city_guide_reserves_orbit_slots(tmp_path):
+    conn = _conn(tmp_path)
+    for i in range(35):
+        db.add_gem(conn, name=f"K {i}", city="kobe", pitch="k.", tags=f"t{i % 9}",
+                   details="d" * 100)
+    db.add_gem(conn, name="Kin no Yu back door", city="arima", pitch="Steam.",
+               tags="onsen", details="d" * 50)
+    guide = db.city_guide(conn, "kobe")
+    assert "day trips to arima" in guide.splitlines()[0]
+    assert any("day trip: arima" in line for line in guide.splitlines())

@@ -104,6 +104,7 @@ class CallServices:
         self._pending_store = pending_store
         self._pending_notes: list[str] = []
         self._pending_context_sent = False
+        self._cities_loaded: set[str] = set()
         matched = store.lookup_by_phone(caller_id) if caller_id else None
         self._pending_account = (pending_store.lookup_by_phone(caller_id)
                                  if pending_store is not None and caller_id else None)
@@ -114,7 +115,8 @@ class CallServices:
 
     _QUERY_OPS = {"verify": "_verify", "register": "_register",
                   "change_pin": "_change_pin", "search_gems": "_kb_search",
-                  "get_gem": "_kb_get", "remember": "_kb_remember",
+                  "get_gem": "_kb_get", "city_guide": "_kb_city_guide",
+                  "remember": "_kb_remember",
                   "add_gem": "_kb_add", "booking_establish": "_booking_establish",
                   "booking_request": "_booking_request"}
 
@@ -185,6 +187,12 @@ class CallServices:
             if data is not None:
                 parts.append(json.dumps(data)[:1500] if not isinstance(data, str)
                              else data[:1500])
+            # A city guide is the agent's working memory of a place — it must
+            # arrive whole (30 one-liners), never squeezed through the 1500-char
+            # data cap that keeps ordinary result payloads voice-sized.
+            guide = str(payload.get("guide") or "").strip()
+            if guide:
+                parts.append(guide[:6000])
         return "\n".join(parts) or "ok"
 
     async def close(self) -> None:
@@ -255,6 +263,7 @@ class CallServices:
             await self._send("auth_result", {"ok": True, "say_hint": channel_warn.strip()})
         self._start_booking(account, channel_id)
         await self._send_caller_context(account, channel_id)
+        await self._load_city_guide(self._destination)
 
     async def _register(self, payload: dict) -> None:
         if self.gate.verified is not None or self.gate.matched is not None:
@@ -302,6 +311,7 @@ class CallServices:
                         f"time) to digits of their own. {phone_line}"
                         f"{channel_warn} {_today_line()}"})
         await self._send_caller_context(account, channel_id)
+        await self._load_city_guide(self._destination)
 
     def _new_account_number(self) -> str:
         while True:
@@ -415,7 +425,26 @@ class CallServices:
                                 "continue the conversation naturally."}
         return None
 
+    async def _load_city_guide(self, *raw_cities: str) -> bool:
+        """The aggressive warm load: the FIRST time a city enters the
+        conversation through ANY op, its full guide (top ~30 gems, one line
+        each) rides that same reply — the agent gets a local's mental map
+        without having to know to ask. Once per city per call."""
+        loaded = False
+        for raw in raw_cities:
+            city = kb.resolve_city(self._conn, str(raw or ""))
+            if not city or city in self._cities_loaded:
+                continue
+            guide = kb.city_guide(self._conn, city)
+            if guide is None:
+                continue
+            self._cities_loaded.add(city)
+            loaded = True
+            await self._send("city_guide", {"ok": True, "guide": guide})
+        return loaded
+
     async def _kb_search(self, payload: dict) -> None:
+        await self._load_city_guide(str(payload.get("city", "")))
         gems = kb.search_gems(self._conn, city=str(payload.get("city", "")),
                               query=str(payload.get("query", "")),
                               tags=str(payload.get("tags", "")))
@@ -428,11 +457,27 @@ class CallServices:
 
     async def _kb_get(self, payload: dict) -> None:
         gem = kb.get_gem(self._conn, str(payload.get("id", "")))
+        if gem is not None:
+            await self._load_city_guide(gem.get("city", ""))
         await self._send("kb_result", {
             "ok": gem is not None, "data": gem,
             "say_hint": ("share the specifics that matter: when to go, how to get in, "
                          "price feel." if gem else
                          "no such gem — re-run search_gems and use an id from the results.")})
+
+    async def _kb_city_guide(self, payload: dict) -> None:
+        raw = str(payload.get("city", "")).strip()
+        if await self._load_city_guide(raw):
+            return   # the guide itself is the reply
+        # Already loaded -> nothing captured -> the SILENT no-op reply; truly
+        # unknown cities deserve an honest miss instead.
+        if kb.resolve_city(self._conn, raw) or not raw:
+            return
+        await self._send("kb_result", {
+            "ok": False, "data": None,
+            "say_hint": f"you have no notes on {raw} — if it comes up, share your own "
+                        "closest knowledge honestly (clearly off-book) and remember "
+                        "what they were looking for."})
 
     async def _kb_remember(self, payload: dict) -> None:
         note = str(payload.get("note", "")).strip()
@@ -540,6 +585,7 @@ class CallServices:
         booking = await self._booking_gate()
         if booking is None:
             return
+        await self._load_city_guide(str(payload.get("location", "")))
         start_date, date_note = normalize_start_date(str(payload.get("start_date", "")))
         detail = await booking.establish_case(
             str(payload.get("location", "")), start_date,

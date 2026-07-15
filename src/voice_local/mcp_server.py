@@ -226,7 +226,10 @@ TOOL_DESCRIPTION = (
     "local hidden-gem knowledge base, memory notes, and bookings. Send ONE JSON object "
     'as a string, e.g. {"op":"verify","pin":"4242"} | {"op":"register","name":"Kenji '
     'Tanaka"} | {"op":"change_pin","new_pin":"5678"} | {"op":"search_gems","city":'
-    '"kobe","query":"onsen quiet morning","tags":"onsen"} | {"op":"get_gem","id":'
+    '"kobe","query":"onsen quiet morning","tags":"onsen"} | {"op":"city_guide","city":'
+    '"<city>"} (the full mental map of a city — fires automatically the first time a '
+    "city appears in any query; call it explicitly the moment a city enters the "
+    'conversation) | {"op":"get_gem","id":'
     '"<gem id>"} | {"op":"remember","note":"..."} | {"op":"add_gem","name":"...",'
     '"city":"kobe","pitch":"..."} | {"op":"booking_establish","location":"...",'
     '"start_date":"YYYY-MM-DD","days":3,"reason":"..."} | {"op":"booking_request",'
