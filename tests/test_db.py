@@ -52,30 +52,39 @@ def test_add_gem_upserts_same_id(tmp_path):
 
 
 def test_profile_brief_and_notes(tmp_path):
-    conn = _conn(tmp_path)
-    assert db.profile_brief(conn, "999999") == ""
-    db.ensure_profile(conn, "123456", name="Boyan Lin", phone="+16506567722")
-    db.add_note(conn, "123456", "loves onsen")
-    db.add_note(conn, "123456", "no allergies")
-    brief = db.profile_brief(conn, "123456")
+    from voice_local.accounts import Account, AccountStore
+
+    store = AccountStore(tmp_path / "accounts")
+    assert store.profile_brief("999999") == ""
+    store.save(Account(account_number="123456", pin="4242", name="Boyan Lin",
+                       phones=["+16506567722"]))
+    store.append_note("123456", "taste: loves onsen")
+    store.append_note("123456", "constraint: no allergies")
+    brief = store.profile_brief("123456")
     assert "Boyan Lin" in brief and "loves onsen" in brief and "no allergies" in brief
+    # topic routing: both are about the person -> persona.md, no trip.md yet
+    assert (store.dir / "123456" / "persona.md").exists()
+    assert not (store.dir / "123456" / "trip.md").exists()
 
 
 def test_import_markdown_idempotent(tmp_path):
+    from voice_local.accounts import AccountStore
+
     conn = _conn(tmp_path)
-    counts = db.import_markdown(conn, REPO_KB)
+    store = AccountStore(tmp_path / "accounts")
+    counts = db.import_markdown(conn, REPO_KB, store=store)
     assert counts["gems"] >= 8 and counts["profiles"] >= 2
-    again = db.import_markdown(conn, REPO_KB)
+    again = db.import_markdown(conn, REPO_KB, store=store)
     assert again == counts
     gem = db.get_gem(conn, "kobe-arima-onsen-kin-no-yu-at-opening")
     assert gem and "gold-water" in gem["pitch"]
     assert "onsen" in gem["tags"]
-    # profile bodies and notes both arrive
-    brief = db.profile_brief(conn, "123456")
+    # profile bodies and notes land in the dossier, deduped on re-import
+    brief = store.profile_brief("123456")
     assert "Food-first" in brief and "Nada sake" in brief
-    # notes not duplicated on re-import
-    n = conn.execute("SELECT count(*) FROM notes WHERE account='123456'").fetchone()[0]
-    assert n == 2
+    n_before = len(store.read_notes("123456"))
+    db.import_markdown(conn, REPO_KB, store=store)
+    assert len(store.read_notes("123456")) == n_before
 
 
 def test_import_jsonl_seeds_and_reports_errors(tmp_path):
@@ -101,19 +110,26 @@ def test_import_jsonl_seeds_and_reports_errors(tmp_path):
     assert conn.execute("SELECT count(*) FROM gems").fetchone()[0] == 2
 
 
-def test_profile_brief_groups_topic_notes(tmp_path):
-    conn = _conn(tmp_path)
-    db.ensure_profile(conn, "555555", name="Mika")
-    db.add_note(conn, "555555", "trip: mid-November, two people")
-    db.add_note(conn, "555555", "taste: quiet onsen, hates crowds")
-    db.add_note(conn, "555555", "taste: quiet onsen, hates crowds")   # dupe collapses
-    db.add_note(conn, "555555", "just rambling context")              # unprefixed
-    db.add_note(conn, "555555", "trip: now 3 nights in Hakone, was 2")
-    brief = db.profile_brief(conn, "555555")
+def test_dossier_routes_topics_and_people(tmp_path):
+    from voice_local.accounts import Account, AccountStore
+
+    store = AccountStore(tmp_path / "accounts")
+    store.save(Account(account_number="555555", pin="1111", name="Mika"))
+    store.append_note("555555", "trip: mid-November, two people")
+    store.append_note("555555", "taste: quiet onsen, hates crowds")
+    store.append_note("555555", "taste: quiet onsen, hates crowds")   # dupe collapses
+    store.append_note("555555", "just rambling context")              # unprefixed
+    store.append_note("555555", "trip: Tokyo 3 nights then Hakone 2")
+    store.append_note("555555", "taste: only vegetarian", person="Mark Kim")
+    folder = store.dir / "555555"
+    assert (folder / "trip.md").exists() and (folder / "persona.md").exists()
+    assert (folder / "mark_kim.md").exists()
+    brief = store.profile_brief("555555")
     assert brief.count("quiet onsen") == 1
-    trip_block = brief.split("trip:\n")[1].split("taste:")[0]
-    assert "mid-November" in trip_block and "now 3 nights" in trip_block
-    assert "notes:\n- just rambling context" in brief
+    trip_block = brief.split("Trip")[1]
+    assert "mid-November" in trip_block and "Tokyo 3 nights" in trip_block
+    assert "Companion — mark kim" in brief and "only vegetarian" in brief
+    assert "just rambling context" in brief
 
 
 def test_resolve_city_exact_fuzzy_and_miss(tmp_path):

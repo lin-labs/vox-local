@@ -31,23 +31,6 @@ CREATE TABLE IF NOT EXISTS gems (
     pitch   TEXT DEFAULT '',          -- the one-breath spoken sell
     details TEXT DEFAULT ''           -- longer notes (hours, budget, insider)
 );
-CREATE TABLE IF NOT EXISTS profiles (
-    account   TEXT PRIMARY KEY,       -- vox-local account number
-    name      TEXT DEFAULT '',
-    phones    TEXT DEFAULT '',        -- comma-separated E.164
-    home_city TEXT DEFAULT '',
-    languages TEXT DEFAULT '',
-    tier      TEXT DEFAULT '',
-    emergency TEXT DEFAULT '',
-    updated   TEXT DEFAULT '',
-    body      TEXT DEFAULT ''         -- markdown body: preferences/constraints/history
-);
-CREATE TABLE IF NOT EXISTS notes (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    account TEXT NOT NULL,
-    ts      TEXT NOT NULL,
-    note    TEXT NOT NULL
-);
 """
 
 
@@ -59,6 +42,11 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(p, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    # User data NEVER lives in this git-committed DB: profiles and notes moved to
+    # the per-account folders under the state dir (accounts.AccountStore). Any
+    # legacy tables from before that move are dropped on open — migrate first
+    # (scripts existed at the 2026-07 cutover) if the data still matters.
+    conn.executescript("DROP TABLE IF EXISTS notes; DROP TABLE IF EXISTS profiles;")
     return conn
 
 
@@ -211,80 +199,6 @@ def add_gem(conn: sqlite3.Connection, *, name: str, city: str, pitch: str,
     return gem_to_dict(conn.execute("SELECT * FROM gems WHERE id = ?", (gem_id,)).fetchone())
 
 
-# ---- profiles & notes -----------------------------------------------------------
-
-
-def ensure_profile(conn: sqlite3.Connection, account: str, *, name: str = "",
-                   phone: str = "") -> None:
-    conn.execute(
-        "INSERT INTO profiles (account, name, phones, updated) VALUES (?,?,?,?) "
-        "ON CONFLICT(account) DO NOTHING", (account, name, phone, _today()))
-    if name:
-        # A pending (pre-registration) profile is created nameless; registration
-        # supplies the name later — fill it in without clobbering an existing one.
-        conn.execute("UPDATE profiles SET name=? WHERE account=? AND name=''",
-                     (name, account))
-    conn.commit()
-
-
-# Notebook topics: the agent prefixes each note ("trip: two people mid-November")
-# so recall groups cleanly. Unprefixed notes land under "notes".
-_NOTE_TOPICS = ("personal", "trip", "taste", "constraint", "reaction")
-
-
-def profile_brief(conn: sqlite3.Connection, account: str, *, max_notes: int = 30,
-                  extra_notes: list[tuple[str, str]] | None = None) -> str:
-    """The warm-start text injected post-verify: header line + profile body +
-    the notebook, grouped by topic prefix and deduped (chronological within
-    each topic — the NEWEST trip/personal line is the current truth).
-    `extra_notes` merges the account folder's notes.txt [(ts, note), ...] with
-    any legacy DB notes. Empty string when the guest has no profile yet."""
-    row = conn.execute("SELECT * FROM profiles WHERE account = ?", (account,)).fetchone()
-    if row is None:
-        return ""
-    head = f"Caller: {row['name'] or 'unknown'} (account {account}"
-    for field in ("tier", "home_city", "languages"):
-        if row[field]:
-            head += f", {field.replace('_', ' ')} {row[field]}"
-    head += ")"
-    db_notes = conn.execute(
-        "SELECT ts, note FROM notes WHERE account = ? ORDER BY id DESC LIMIT ?",
-        (account, max_notes)).fetchall()
-    combined = [(n["ts"] or "", n["note"] or "") for n in reversed(db_notes)]
-    combined += list(extra_notes or [])
-    combined.sort(key=lambda n: n[0])   # ts strings sort chronologically
-    combined = combined[-max_notes:]
-    grouped: dict[str, list[str]] = {t: [] for t in (*_NOTE_TOPICS, "notes")}
-    seen: set[str] = set()
-    for ts, raw in combined:            # oldest first within the recent window
-        text = raw.strip()
-        topic, _, rest = text.partition(":")
-        if topic.strip().lower() in _NOTE_TOPICS and rest.strip():
-            topic, text = topic.strip().lower(), rest.strip()
-        else:
-            topic = "notes"
-        key = " ".join(text.lower().split())
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        grouped[topic].append(f"- {text} ({ts[:10]})" if ts else f"- {text}")
-    sections = [f"{t}:\n" + "\n".join(lines) for t, lines in grouped.items() if lines]
-    parts = [head]
-    if (row["body"] or "").strip():
-        parts.append(row["body"].strip())
-    if sections:
-        parts.append("Notebook (chronological; the newest line in each topic is the "
-                     "current truth):\n" + "\n".join(sections))
-    return "\n\n".join(parts)
-
-
-def add_note(conn: sqlite3.Connection, account: str, note: str) -> None:
-    ensure_profile(conn, account)
-    conn.execute("INSERT INTO notes (account, ts, note) VALUES (?,?,?)",
-                 (account, _dt.datetime.now().strftime("%Y-%m-%d %H:%M"), note.strip()))
-    conn.commit()
-
-
 # ---- legacy markdown import ------------------------------------------------------
 
 
@@ -304,9 +218,12 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     return meta, m.group(2).strip()
 
 
-def import_markdown(conn: sqlite3.Connection, kb_dir: str | Path) -> dict:
+def import_markdown(conn: sqlite3.Connection, kb_dir: str | Path,
+                    store=None) -> dict:
     """One-shot migration from the concierge-kb layout (kb/gems/<city>/<id>.md,
-    kb/profiles/<account>.md). Idempotent — reruns upsert."""
+    kb/profiles/<account>.md). Gems land in the DB; profiles/notes are USER data
+    and land in the given accounts.AccountStore dossier (skipped when store is
+    None — user stuff never lives in gems.db). Idempotent — reruns upsert."""
     kb = Path(kb_dir)
     n_gems = n_profiles = 0
     for f in sorted(kb.glob("gems/*/*.md")):
@@ -325,29 +242,27 @@ def import_markdown(conn: sqlite3.Connection, kb_dir: str | Path) -> dict:
              meta.get("source", "curator"), "", meta.get("updated", _today()),
              pitch.strip(), ("## " + details).strip() if details else ""))
         n_gems += 1
-    for f in sorted(kb.glob("profiles/*.md")):
+    for f in (sorted(kb.glob("profiles/*.md")) if store is not None else []):
         meta, body = _parse_frontmatter(f.read_text())
         account = str(meta.get("account", f.stem))
-        # Notes live in their own table; strip the section out of the body.
         body_main, _, notes_md = body.partition("## Notes")
-        conn.execute(
-            "INSERT INTO profiles (account,name,phones,home_city,languages,tier,"
-            "emergency,updated,body) VALUES (?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(account) DO UPDATE SET name=excluded.name, body=excluded.body, "
-            "phones=excluded.phones, updated=excluded.updated",
-            (account, meta.get("name", ""), meta.get("phones", ""),
-             meta.get("home_city", ""), meta.get("languages", ""),
-             meta.get("tier", ""), meta.get("emergency_contact", ""),
-             meta.get("updated", _today()), body_main.strip()))
+        existing = {(ts, text) for ts, text in store.read_notes(account)}
+        header_bits = [meta.get("name", "")] + [
+            f"{k.replace('_', ' ')}: {meta[k]}" for k in
+            ("home_city", "languages", "tier", "emergency_contact") if meta.get(k)]
+        seed = [f"personal: {'; '.join(b for b in header_bits if b)}"] if any(
+            header_bits) else []
+        seed += [f"personal: {line}" for line in body_main.strip().splitlines()
+                 if line.strip() and not line.startswith("#")]
+        for note in seed:
+            if (meta.get("updated", _today()), note) not in existing:
+                store.append_note(account, note, ts=meta.get("updated", _today()))
+                existing.add((meta.get("updated", _today()), note))
         for line in notes_md.splitlines():
             m = re.match(r"-\s*([0-9:\- ]+\w*):\s*(.+)", line.strip())
-            if m:
-                exists = conn.execute(
-                    "SELECT 1 FROM notes WHERE account=? AND note=?",
-                    (account, m.group(2).strip())).fetchone()
-                if not exists:
-                    conn.execute("INSERT INTO notes (account, ts, note) VALUES (?,?,?)",
-                                 (account, m.group(1).strip(), m.group(2).strip()))
+            if m and (m.group(1).strip(), m.group(2).strip()) not in existing:
+                store.append_note(account, m.group(2).strip(), ts=m.group(1).strip())
+                existing.add((m.group(1).strip(), m.group(2).strip()))
         n_profiles += 1
     conn.commit()
     return {"gems": n_gems, "profiles": n_profiles}
@@ -390,6 +305,4 @@ def export_json(conn: sqlite3.Connection) -> str:
     """Whole-bag JSON dump (debug / diffing / the extension's duplicate check)."""
     return json.dumps({
         "gems": [gem_to_dict(r) for r in conn.execute("SELECT * FROM gems ORDER BY id")],
-        "profiles": [dict(r) for r in conn.execute(
-            "SELECT account, name, updated FROM profiles ORDER BY account")],
     }, indent=1)

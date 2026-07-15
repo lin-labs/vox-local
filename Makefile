@@ -4,7 +4,7 @@ SHELL := /bin/bash
 UNIT := voice-local.service
 NGROK_UNIT := voice-local-ngrok.service
 
-.PHONY: serve test start stop restart status logs tail release deploy push-gems
+.PHONY: serve test start stop restart status logs tail release deploy push-gems push-prompt
 
 serve:
 	uv run vox-local serve
@@ -38,3 +38,12 @@ deploy:
 
 push-gems:
 	git add data/gems.db && git commit -m "gems: data bag update" && git push
+
+# The live agent runs whatever Vocal Bridge holds — every edit to
+# docs-agent-prompt.txt must be pushed there in the same change (AGENTS.md rule 0).
+push-prompt:
+	vb prompt set -f docs-agent-prompt.txt
+	@vb prompt show 2>/dev/null | sed -n '/--- System Prompt ---/,$$p' | tail -n +2 | \
+	  diff -q - docs-agent-prompt.txt >/dev/null \
+	  && echo "prompt in sync with Vocal Bridge" \
+	  || { echo "WARNING: remote prompt still differs after push"; exit 1; }

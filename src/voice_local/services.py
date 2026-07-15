@@ -110,6 +110,12 @@ class CallServices:
                                  if pending_store is not None and caller_id else None)
         self.gate = AuthGate(store, matched=matched)
         self.booking: BookingSession | None = None
+        # Attribution happens AT CALL START: a known caller is recognized (name +
+        # history preloads on the first query); an unknown caller silently gets a
+        # pending account parked right away so every note persists — without ever
+        # rushing them toward creating a real account.
+        if matched is None and self._pending_account is None and caller_id:
+            self._ensure_pending_account()
 
     # ---- op dispatch (query grammar) --------------------------------------------
 
@@ -148,22 +154,42 @@ class CallServices:
                 and self._pending_account is None and self.gate.matched is None
                 and self.gate.verified is None):
             self._pending_account = self._pending_store.lookup_by_phone(agent_phone)
-            if self._pending_account is not None and not self._caller_id:
+            if not self._caller_id:
                 self._caller_id = agent_phone
-        # A returning caller with a parked (pre-registration) notebook: surface it
-        # once, silently — Koyuki must not re-ask, but bookings still need an account.
-        if (self._pending_account is not None and not self._pending_context_sent
-                and self.gate.matched is None and self.gate.verified is None):
-            self._pending_context_sent = True
-            brief = kb.profile_brief(
-                self._conn, self._pending_account.account_number,
-                extra_notes=self._pending_store.read_notes(
-                    self._pending_account.account_number))
-            if brief:
-                await self._send("caller_context", {
-                    "brief": "Returning caller with NO account yet — notebook from "
-                             "earlier calls (never re-ask these; bookings still require "
-                             "creating the account):\n" + brief, "trip_summary": ""})
+            if self._pending_account is None:
+                # The phone number just became known and matches nothing: park the
+                # pending account now — attribution happens when the call happens.
+                self._ensure_pending_account()
+        # A caller-ID match means this is very likely a returning guest: preload
+        # their dossier ONCE, silently, so the conversation is targeted from the
+        # first minute. Matched-but-unverified real accounts stay guarded: the
+        # dossier informs Koyuki's instincts, but nothing private is recited and
+        # bookings still require the PIN. No match = no dossier, and that is fine
+        # — never rush toward creating an account.
+        if not self._pending_context_sent and self.gate.verified is None:
+            preload = ""
+            if self.gate.matched is not None:
+                brief = self._store.profile_brief(self.gate.matched.account_number)
+                if brief:
+                    preload = (
+                        "Caller-ID matches this returning guest — greet them by NAME "
+                        "like an old friend and use their history naturally (never "
+                        "re-ask what it answers). PIN verification is still required "
+                        "before bookings, account details, or PIN changes; if the "
+                        "voice clearly is not them, fall back to neutral hosting:\n"
+                        + brief)
+            elif self._pending_account is not None:
+                brief = self._pending_store.profile_brief(
+                    self._pending_account.account_number)
+                if brief:
+                    preload = (
+                        "Returning caller with NO account yet — your notebook from "
+                        "earlier calls (never re-ask these; bookings still require "
+                        "creating the account, but never rush that):\n" + brief)
+            if preload:
+                self._pending_context_sent = True
+                await self._send("caller_context",
+                                 {"brief": preload, "trip_summary": ""})
         captured: list[tuple[str, dict]] = []
         outer_send = self._send
 
@@ -292,7 +318,6 @@ class CallServices:
         account = Account(account_number=number, pin=pin, name=name,
                           phones=[self._caller_id] if self._caller_id else [])
         self._store.save(account)
-        kb.ensure_profile(self._conn, number, name=name, phone=self._caller_id)
         self.gate.verified = account
         self._flush_notes(number)
         self._adopt_pending(number)
@@ -370,8 +395,7 @@ class CallServices:
         the trip parse — a whole-channel LLM read that grows with channel history —
         runs detached and rides a LATER reply via the pending queue. Blocking verify
         on it once exceeded VB's tool timeout and deadlocked a live call."""
-        brief = kb.profile_brief(self._conn, account.account_number,
-                                 extra_notes=self._store.read_notes(account.account_number))
+        brief = self._store.profile_brief(account.account_number)
         await self._send("caller_context", {"brief": brief, "trip_summary": ""})
         if self._grok is None or self._puffo is None or not channel_id:
             return
@@ -485,6 +509,7 @@ class CallServices:
 
     async def _kb_remember(self, payload: dict) -> None:
         note = str(payload.get("note", "")).strip()
+        person = str(payload.get("person", "")).strip()
         note_key = " ".join(note.lower().split())
         if not note or note_key in self._seen_notes:
             log.info("duplicate/empty remember note ignored")
@@ -497,11 +522,13 @@ class CallServices:
             # — never re-ask the caller.
             pending = self._ensure_pending_account()
             if pending is not None:
-                self._pending_store.append_note(pending.account_number, note)
+                self._pending_store.append_note(pending.account_number, note,
+                                                person=person)
             else:
                 self._pending_notes.append(note)
         else:
-            self._store.append_note(self.gate.verified.account_number, note)
+            self._store.append_note(self.gate.verified.account_number, note,
+                                    person=person)
         await self._send("kb_result", {
             "ok": True, "data": None,
             "say_hint": "SILENT: noted — say nothing about this; continue naturally."})
@@ -525,7 +552,6 @@ class CallServices:
                 account_number=number, pin="", name="",
                 phones=[self._caller_id] if self._caller_id else [])
             self._pending_store.save(self._pending_account)
-            kb.ensure_profile(self._conn, number, phone=self._caller_id)
             log.info("pending account %s parked (notes persist pre-registration)", number)
         return self._pending_account
 
@@ -537,12 +563,6 @@ class CallServices:
             return
         old = self._pending_account.account_number
         moved = self._pending_store.move_notes(old, self._store, account_number)
-        if old != account_number:
-            # Legacy rows from before notebooks moved to notes.txt.
-            self._conn.execute("UPDATE notes SET account=? WHERE account=?",
-                               (account_number, old))
-            self._conn.execute("DELETE FROM profiles WHERE account=?", (old,))
-            self._conn.commit()
         if moved or old != account_number:
             log.info("adopted pending %s -> %s (%d notes)", old, account_number, moved)
         self._pending_store.remove(old)

@@ -18,13 +18,25 @@ The legacy markdown-era docs live in
    agent makes; callers can contribute gems mid-call (`add_gem`).
 2. **Guest accounts & memory** — caller-ID matched accounts, PIN verification
    with a 3-strike gate (server decides; the agent only relays digits),
-   registration that mints account+PIN on the phone, per-guest profiles and
-   durable notes, and a fresh per-call trip summary parsed from the guest's
-   booking channel. Before registration, the first `remember` parks a real
-   account number in `<state>/accounts-pending/` (no PIN, no channel) so notes
-   persist across hangups; registration promotes that same number to a full
-   account (only then is the booking channel created), and verifying into an
-   existing account migrates the parked notes.
+   registration that mints account+PIN on the phone, and a fresh per-call trip
+   summary parsed from the guest's booking channel. **User data never lives in
+   gems.db**: each account is a dossier folder under the state dir —
+
+   ```
+   ~/data/Projects/vox-local/accounts/200773/
+   ├── account.json   # identity, phones, PIN, booking channels
+   ├── persona.md     # the caller: family, style, tastes, constraints
+   ├── mark_kim.md    # one page per named travel companion
+   └── trip.md        # exploration + clear-cut plans (trip:/reaction: notes)
+   ```
+
+   Attribution happens when the call happens: a known caller-ID preloads the
+   whole dossier as silent context (greet by name, PIN still gates bookings);
+   an unknown caller silently gets the same folder parked in
+   `<state>/accounts-pending/` (no PIN, no channel) so every note persists
+   across hangups — without rushing anyone toward an account. Registration
+   promotes the parked number to a full account (only then is the booking
+   channel created); verifying into an existing account merges the dossier in.
 3. **Puffo booking coordination** — per-guest destination channels
    (`kobe-<account>`), one short thread per trip
    (`[booking] kobe 2026-12-15 2 days`), tagged requests

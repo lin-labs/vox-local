@@ -8,6 +8,17 @@ This repo holds two datasets, both plain markdown with YAML-ish frontmatter:
 
 ## Rules
 
+0. **Prompt changes ALWAYS sync to Vocal Bridge.** `docs-agent-prompt.txt` is
+   deployed config, not documentation: the live phone agent (Koyuki) runs
+   whatever Vocal Bridge holds, and the repo file is the source of truth only
+   while the two match. ANY edit to `docs-agent-prompt.txt` must be pushed in
+   the same change — run `make push-prompt` (wraps `vb prompt set -f
+   docs-agent-prompt.txt` and verifies the round-trip). The greeting is a
+   separate VB field: sync it with `printf '<greeting>' | vb prompt set
+   --greeting`. Never leave the repo and the live agent divergent in either
+   direction; if `make push-prompt` reports a diff you didn't make, pull the
+   remote version down and reconcile before editing.
+
 1. **Prefer the CLI for reads and small writes** — `bin/ckb` (stdlib python3,
    JSON out). It handles phone-number lookup, ranking, and timestamped notes:
    `ckb gems search`, `ckb gems get`, `ckb profile brief`, `ckb profile note`.

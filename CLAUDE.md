@@ -67,4 +67,9 @@ _Add a brief overview of your project architecture_
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+- **Prompt changes ALWAYS sync to Vocal Bridge.** `docs-agent-prompt.txt` is
+  deployed config: after ANY edit to it, run `make push-prompt` in the same
+  change (it runs `vb prompt set -f docs-agent-prompt.txt` and verifies the
+  round-trip). The greeting is a separate VB field
+  (`printf '<greeting>' | vb prompt set --greeting`). Never leave the repo
+  file and the live agent divergent. See AGENTS.md rule 0.

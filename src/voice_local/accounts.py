@@ -50,6 +50,12 @@ def _digits(number: str) -> str:
     return re.sub(r"\D", "", number or "")
 
 
+# Notebook topics: the agent prefixes each note ("trip: two people mid-November")
+# so the dossier files itself. trip/reaction notes land in trip.md; everything
+# else about the humans lands in persona.md (or a named companion's file).
+_TRIP_TOPICS = ("trip", "reaction")
+
+
 class AccountStore:
     """Load/lookup/save accounts under one directory (created lazily on save),
     one folder per account: <dir>/<number>/account.json + notes.txt."""
@@ -116,40 +122,140 @@ class AccountStore:
         if legacy.exists():
             legacy.unlink()
 
-    # ---- the notebook (notes.txt beside account.json) ---------------------------
+    # ---- the notebook (markdown docs beside account.json) -----------------------
+    # User data NEVER lives in the git-committed gems DB. Each account folder is
+    # a small dossier the host keeps:
+    #   trip.md     — exploration and clear-cut plans (trip: / reaction: notes)
+    #   persona.md  — the caller themself: family, style, tastes, constraints
+    #   <person>.md — one file per named travel companion (bryan_li.md, ...)
+    # Every file is timestamped append-only bullets; the whole dossier loads into
+    # the agent's context when the account is loaded.
 
-    def append_note(self, account_number: str, note: str, *, ts: str = "") -> None:
+    def _doc_for(self, note: str, person: str) -> str:
+        if person.strip():
+            slug = re.sub(r"_+", "_",
+                          re.sub(r"[^a-z0-9]+", "_", person.lower())).strip("_")
+            if slug:
+                return f"{slug}.md"
+        topic = note.split(":", 1)[0].strip().lower()
+        return "trip.md" if topic in _TRIP_TOPICS else "persona.md"
+
+    _DOC_TITLES = {"trip.md": "Trip — plans and exploration",
+                   "persona.md": "Persona — the caller, family, and style"}
+
+    def append_note(self, account_number: str, note: str, *, person: str = "",
+                    ts: str = "") -> None:
         folder = self._folder(account_number)
         folder.mkdir(parents=True, exist_ok=True)
+        doc = self._doc_for(str(note), person)
+        p = folder / doc
+        if not p.exists():
+            title = self._DOC_TITLES.get(
+                doc, f"{person.strip() or doc.removesuffix('.md')} — companion")
+            p.write_text(f"# {title} (account {account_number})\n\n", encoding="utf-8")
         ts = ts or _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-        with (folder / "notes.txt").open("a", encoding="utf-8") as f:
-            f.write(f"{ts} | {' '.join(str(note).split())}\n")
+        with p.open("a", encoding="utf-8") as f:
+            f.write(f"- {ts} | {' '.join(str(note).split())}\n")
 
-    def read_notes(self, account_number: str) -> list[tuple[str, str]]:
+    def _docs(self, account_number: str) -> list[Path]:
+        """The dossier files, persona first, trip last, companions between."""
+        folder = self._folder(account_number)
+        if not folder.is_dir():
+            return []
+        docs = sorted(p for p in folder.glob("*.md")
+                      if p.name not in ("persona.md", "trip.md"))
+        persona, trip = folder / "persona.md", folder / "trip.md"
+        return ([persona] if persona.exists() else []) + docs + (
+            [trip] if trip.exists() else [])
+
+    def read_doc(self, account_number: str, doc: str) -> list[tuple[str, str]]:
         """[(ts, note), ...] oldest first; tolerant of hand-edited lines."""
-        p = self._folder(account_number) / "notes.txt"
+        p = self._folder(account_number) / doc
         if not p.exists():
             return []
         out = []
         for line in p.read_text(encoding="utf-8").splitlines():
-            ts, sep, text = line.partition(" | ")
+            line = line.strip()
+            if not line.startswith("- "):
+                continue   # headers / hand-written prose stay out of the parse
+            ts, sep, text = line[2:].partition(" | ")
             if sep and text.strip():
                 out.append((ts.strip(), text.strip()))
-            elif line.strip():
-                out.append(("", line.strip()))
+            elif line[2:].strip():
+                out.append(("", line[2:].strip()))
         return out
+
+    def read_notes(self, account_number: str) -> list[tuple[str, str]]:
+        """Every note across the dossier, oldest first (legacy notes.txt included)."""
+        notes = []
+        for p in self._docs(account_number):
+            notes += self.read_doc(account_number, p.name)
+        legacy = self._folder(account_number) / "notes.txt"
+        if legacy.exists():
+            for line in legacy.read_text(encoding="utf-8").splitlines():
+                ts, sep, text = line.partition(" | ")
+                if sep and text.strip():
+                    notes.append((ts.strip(), text.strip()))
+        return sorted(notes, key=lambda n: n[0])
 
     def move_notes(self, account_number: str, target: "AccountStore",
                    target_number: str) -> int:
-        """Append this account's notes onto the target's notebook (timestamps
-        preserved) and drop the source file. Returns how many moved."""
-        notes = self.read_notes(account_number)
-        for ts, text in notes:
-            target.append_note(target_number, text, ts=ts)
-        p = self._folder(account_number) / "notes.txt"
-        if p.exists():
+        """Merge this account's dossier into the target's (timestamps preserved,
+        same doc routing) and drop the source files. Returns how many lines moved."""
+        moved = 0
+        for p in self._docs(account_number):
+            person = ("" if p.name in ("persona.md", "trip.md")
+                      else p.stem.replace("_", " "))
+            for ts, text in self.read_doc(account_number, p.name):
+                target.append_note(target_number, text, person=person, ts=ts)
+                moved += 1
             p.unlink()
-        return len(notes)
+        legacy = self._folder(account_number) / "notes.txt"
+        if legacy.exists():
+            for ts, text in self.read_notes(account_number):
+                target.append_note(target_number, text, ts=ts)
+                moved += 1
+            legacy.unlink()
+        return moved
+
+    def profile_brief(self, account_number: str) -> str:
+        """The dossier as caller context, injected whenever the account loads:
+        header + persona + one section per companion + the trip. ALL notes ride
+        along (deduped, chronological; the newest line on a topic is the current
+        truth). Empty string for a guest with no dossier."""
+        acct = self.get(account_number)
+        docs = self._docs(account_number)
+        legacy = self.read_notes(account_number) if not docs else []
+        if not docs and not legacy and acct is None:
+            return ""
+        head = f"Caller: {(acct.name if acct else '') or 'unknown'} (account {account_number})"
+        parts = [head]
+        seen: set[str] = set()
+
+        def lines_of(pairs: list[tuple[str, str]]) -> list[str]:
+            out = []
+            for ts, text in pairs:
+                key = " ".join(text.lower().split())
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                out.append(f"- {text} ({ts[:10]})" if ts else f"- {text}")
+            return out
+
+        titles = {"persona.md": "Persona (the caller, family, style)",
+                  "trip.md": "Trip (chronological; the newest line on a topic is "
+                             "the current truth)"}
+        for p in docs:
+            body = lines_of(self.read_doc(account_number, p.name))
+            if body:
+                title = titles.get(p.name, f"Companion — {p.stem.replace('_', ' ')}")
+                parts.append(f"{title}:\n" + "\n".join(body))
+        if legacy:
+            body = lines_of(legacy)
+            if body:
+                parts.append("Notes:\n" + "\n".join(body))
+        # Head alone carries no history — callers with an empty dossier get "".
+        return "\n\n".join(parts) if len(parts) > 1 else ""
 
 
 class AuthGate:

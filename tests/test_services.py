@@ -176,7 +176,8 @@ def test_registration_mints_account_and_profile(conn, store, fake_puffo):
     assert "+15550001111" in out and "CONFIRM" in out
     accounts = [a for a in store.load_all() if a.name == "Yuki Chen"]
     assert len(accounts) == 1 and accounts[0].phones == ["+15550001111"]
-    assert db.profile_brief(conn, accounts[0].account_number)  # profile exists
+    store.append_note(accounts[0].account_number, "taste: loves soba")
+    assert "Yuki Chen" in store.profile_brief(accounts[0].account_number)
 
 
 def test_booking_flow_short_thread_and_date_bump(conn, store, fake_puffo):
@@ -251,8 +252,7 @@ def test_notebook_notes_flush_into_profile_on_register(conn, store, fake_puffo):
     assert "SILENT" in q(svc, op="remember", note="two people, loves onsen")
     q(svc, op="register", name="Mika Sato")
     acct = next(a for a in store.load_all() if a.name == "Mika Sato")
-    brief = db.profile_brief(conn, acct.account_number,
-                             extra_notes=store.read_notes(acct.account_number))
+    brief = store.profile_brief(acct.account_number)
     assert "Tokyo then Hakone" in brief and "loves onsen" in brief  # no re-asking
 
 
@@ -275,7 +275,7 @@ def test_pre_account_note_parks_a_pending_account(conn, store, tmp_path):
     q(svc, op="remember", note="loves quiet onsen mornings")
     parked = pending_store.lookup_by_phone("+15550001111")
     assert parked is not None and parked.pin == ""
-    assert (pending_store.dir / parked.account_number / "notes.txt").exists()
+    assert (pending_store.dir / parked.account_number / "persona.md").exists()
     assert [n for _, n in pending_store.read_notes(parked.account_number)] == [
         "loves quiet onsen mornings"]
 
@@ -288,9 +288,7 @@ def test_register_promotes_pending_number_and_clears_parking(conn, store, tmp_pa
     assert parked.account_number in out            # same number promoted
     assert store.get(parked.account_number) is not None
     assert pending_store.get(parked.account_number) is None
-    row = conn.execute("SELECT name FROM profiles WHERE account=?",
-                       (parked.account_number,)).fetchone()
-    assert row["name"] == "Mika Tanaka"
+    assert store.get(parked.account_number).name == "Mika Tanaka"
     assert len(store.read_notes(parked.account_number)) == 1   # notebook moved over
 
 

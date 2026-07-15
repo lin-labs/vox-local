@@ -182,7 +182,10 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = kbdb.connect(_db_path())
     if args.cmd == "import-md":
-        counts = kbdb.import_markdown(conn, args.kb_dir)
+        from voice_local.accounts import AccountStore
+
+        counts = kbdb.import_markdown(conn, args.kb_dir,
+                                      store=AccountStore(_state_dir() / "accounts"))
         print(f"imported: {counts['gems']} gems, {counts['profiles']} profiles "
               f"-> {_db_path()}")
         return 0
@@ -223,8 +226,6 @@ def main(argv: list[str] | None = None) -> int:
                           booking_threads=existing.booking_threads if existing else {},
                           channels=existing.channels if existing else {})
         path = store.save(account)
-        kbdb.ensure_profile(conn, args.account, name=args.name,
-                            phone=args.phone[0] if args.phone else "")
         print(f"saved account {args.account} -> {path}")
         return 0
     parser.error(f"unknown command {args.cmd}")
