@@ -127,23 +127,14 @@ class CallServices:
                   "add_gem": "_kb_add", "booking_establish": "_booking_establish",
                   "booking_request": "_booking_request"}
 
-    async def query(self, query: str) -> str:
-        """ONE JSON command string in, spoken-guidance text out — consumed
-        synchronously in the agent's querying turn."""
-        try:
-            q = json.loads(query)
-            assert isinstance(q, dict)
-        except (ValueError, TypeError, AssertionError):
-            return ("could not parse the query — send ONE JSON object like "
-                    '{"op":"verify","pin":"1234"} (ops: ' + ", ".join(self._QUERY_OPS) + ")")
-        method = self._QUERY_OPS.get(str(q.get("op", "")).strip().lower())
-        if method is None:
-            return f"unknown op {q.get('op')!r} — valid ops: {', '.join(self._QUERY_OPS)}"
-        # Preferred caller-ID path: the agent passes the platform-provided number in
-        # the query itself (the MCP wire carries no metadata; the VB logs API is only
-        # the fallback). Model-relayed digits are safe to trust for the MATCH because
-        # the PIN still gates verification — a wrong number just means no match.
-        agent_phone = str(q.pop("caller_phone", "") or "").strip()
+    async def attribute(self, agent_phone: str = "") -> None:
+        """STEP ONE of every call: put a face on the caller. Match the phone
+        against established accounts first, then the pending folder; an unknown
+        number silently gets a fresh pending dossier parked so everything
+        learned this call persists. A match preloads the whole dossier ONCE as
+        silent caller context — greet by name, use the history; PIN still
+        gates bookings. Runs on every query (including the check_updates ping)
+        and is cheap once attribution is settled."""
         if agent_phone and self.gate.verified is None and self.gate.matched is None:
             matched = self._store.lookup_by_phone(agent_phone)
             if matched is not None:
@@ -191,6 +182,33 @@ class CallServices:
                 self._pending_context_sent = True
                 await self._send("caller_context",
                                  {"brief": preload, "trip_summary": ""})
+
+    def attribution_phone(self, query: str) -> str:
+        """Pull caller_phone out of a raw query string (for ops handled a layer
+        up, like check_updates) without dispatching it."""
+        try:
+            q = json.loads(query)
+            return str(q.get("caller_phone", "") or "").strip()
+        except (ValueError, TypeError):
+            return ""
+
+    async def query(self, query: str) -> str:
+        """ONE JSON command string in, spoken-guidance text out — consumed
+        synchronously in the agent's querying turn."""
+        try:
+            q = json.loads(query)
+            assert isinstance(q, dict)
+        except (ValueError, TypeError, AssertionError):
+            return ("could not parse the query — send ONE JSON object like "
+                    '{"op":"verify","pin":"1234"} (ops: ' + ", ".join(self._QUERY_OPS) + ")")
+        method = self._QUERY_OPS.get(str(q.get("op", "")).strip().lower())
+        if method is None:
+            return f"unknown op {q.get('op')!r} — valid ops: {', '.join(self._QUERY_OPS)}"
+        # Preferred caller-ID path: the agent passes the platform-provided number in
+        # the query itself (the MCP wire carries no metadata; the VB logs API is only
+        # the fallback). Model-relayed digits are safe to trust for the MATCH because
+        # the PIN still gates verification — a wrong number just means no match.
+        await self.attribute(str(q.pop("caller_phone", "") or "").strip())
         captured: list[tuple[str, dict]] = []
         outer_send = self._send
 

@@ -397,3 +397,18 @@ def test_channel_named_after_guest_with_personal_welcome(conn, store, fake_puffo
     # reuse: second _ensure_channel must NOT send another welcome
     n_sends = sum(1 for c in calls if "send" in c and "ようこそ" in " ".join(c))
     assert n_sends == 1
+
+
+def test_attribution_ping_parks_pending_and_preloads(conn, store, tmp_path):
+    # The check_updates ping alone (no other op) must attribute the caller.
+    svc, pending_store = _pending_services(conn, store, tmp_path, caller_id="")
+    asyncio.run(svc.attribute("+15550007777"))
+    parked = pending_store.lookup_by_phone("+15550007777")
+    assert parked is not None                       # unknown number -> parked dossier
+    pending_store.append_note(parked.account_number, "taste: loves quiet onsen")
+    # next call, same phone: attribution alone preloads the notebook
+    svc2, _ = _pending_services(conn, store, tmp_path, caller_id="")
+    svc2._pending_store = pending_store
+    asyncio.run(svc2.attribute("+15550007777"))
+    assert any(a == "caller_context" and "loves quiet onsen" in p.get("brief", "")
+               for a, p in svc2._test_pending)

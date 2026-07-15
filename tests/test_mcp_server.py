@@ -15,11 +15,22 @@ class FakeServices:
         self.caller_id = caller_id
         self.send = send
         self.queries = []
+        self.attributed = []
         self.closed = False
 
     async def query(self, query):
         self.queries.append(query)
         return "ok-reply"
+
+    def attribution_phone(self, query):
+        import json as _json
+        try:
+            return str(_json.loads(query).get("caller_phone", "") or "")
+        except ValueError:
+            return ""
+
+    async def attribute(self, phone=""):
+        self.attributed.append(phone)
 
     async def close(self):
         self.closed = True

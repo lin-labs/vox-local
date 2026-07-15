@@ -138,6 +138,14 @@ class VBBackend:
             state = await self._resolve_call()
             op = _op_of(query)
             if op == "check_updates":
+                # The poll doubles as the ATTRIBUTION PING: even though the op is
+                # handled at this layer, the caller still gets matched (accounts,
+                # then pending) and their dossier preloaded into this very reply.
+                try:
+                    await state.services.attribute(
+                        state.services.attribution_phone(query))
+                except Exception:  # noqa: BLE001 - attribution must never break the poll
+                    log.exception("attribution ping failed")
                 reply = ""
             else:
                 try:
