@@ -205,7 +205,9 @@ class CallServices:
                         f"making them re-explain their tastes or bookings. {_today_line()} "
                         "Resolve every relative date ('January', 'next week') against "
                         "TODAY — never into the past."})
-        channel_id = await self._ensure_channel(account)
+        channel_id, channel_warn = await self._ensure_channel(account)
+        if channel_warn:
+            await self._send("auth_result", {"ok": True, "say_hint": channel_warn.strip()})
         self._start_booking(account, channel_id)
         await self._send_caller_context(account, channel_id)
 
@@ -230,17 +232,23 @@ class CallServices:
         self._store.save(account)
         kb.ensure_profile(self._conn, number, name=name, phone=self._caller_id)
         self.gate.verified = account
-        channel_id = await self._ensure_channel(account)
+        channel_id, channel_warn = await self._ensure_channel(account)
         self._start_booking(account, channel_id)
+        phone_line = (f"Their account is linked to the number they're calling from "
+                      f"({self._caller_id}) — CONFIRM with them that this is their own "
+                      f"number to use next time; if it isn't, tell them to note the "
+                      f"account number carefully instead."
+                      if self._caller_id else
+                      "No caller ID came through, so the account is NOT linked to a "
+                      "phone — they must note the account number carefully.")
         await self._send("registration_result", {
             "ok": True, "account_number": number, "name": name, "pin": pin,
             "say_hint": f"registered — welcome {name}. Tell them their account number is "
-                        f"{number}: read it one digit at a time ({', '.join(number)}) and "
-                        f"ask them to note it down. Their PIN is {pin}: read it one digit "
-                        f"at a time ({', '.join(pin)}), and tell them they can ask you to "
-                        "change it right now if they'd prefer their own. They'll need the "
-                        f"account number and PIN when calling from another phone. "
-                        f"{_today_line()}"})
+                        f"{number}: read it one digit at a time ({', '.join(number)}). "
+                        f"Their PIN is {pin}: read it one digit at a time "
+                        f"({', '.join(pin)}), and they can change it right now (or any "
+                        f"time) to digits of their own. {phone_line}"
+                        f"{channel_warn} {_today_line()}"})
         await self._send_caller_context(account, channel_id)
 
     def _new_account_number(self) -> str:
@@ -271,15 +279,23 @@ class CallServices:
 
     # ---- caller context (warm start) -------------------------------------------------
 
-    async def _ensure_channel(self, account: Account) -> str:
+    async def _ensure_channel(self, account: Account) -> tuple[str, str]:
+        """(channel_id, warning). A failed per-guest channel creation must be SAID
+        to the caller — a silent fallback surfaces as a broken booking much later
+        in the conversation, which is worse than honesty now."""
         if self._puffo is None:
-            return ""
+            return "", ""
         client, _listener = self._puffo
         if not self._destination:
-            return client.channel_id
-        return await ensure_user_channel(
+            return client.channel_id, ""
+        channel_id = await ensure_user_channel(
             client, self._store, account, self._destination,
             space_id=self._space_id, fulfiller_slug=self._fulfiller)
+        if channel_id and channel_id != client.channel_id:
+            return channel_id, ""
+        return channel_id, (" WARNING: their private booking channel could NOT be set "
+                            "up — tell them there's a technical hiccup on the booking "
+                            "side right now; recommendations still work fine.")
 
     async def _send_caller_context(self, account: Account, channel_id: str) -> None:
         """The profile brief goes out IMMEDIATELY (same reply as the verify result);

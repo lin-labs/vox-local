@@ -171,6 +171,8 @@ def test_registration_mints_account_and_profile(conn, store, fake_puffo):
                        fulfiller_slug=FULFILLER, space_id="sp_test", send=send)
     out = q(svc, op="register", name="Yuki Chen")
     assert "registered — welcome Yuki Chen" in out and "Today is" in out
+    # the agent is told to CONFIRM the linked caller-ID with the caller
+    assert "+15550001111" in out and "CONFIRM" in out
     accounts = [a for a in store.load_all() if a.name == "Yuki Chen"]
     assert len(accounts) == 1 and accounts[0].phones == ["+15550001111"]
     assert db.profile_brief(conn, accounts[0].account_number)  # profile exists

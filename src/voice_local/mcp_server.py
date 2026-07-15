@@ -84,7 +84,13 @@ class VBBackend:
         if not live:
             return None
         if len(live) > 1:
-            log.warning("multiple in_progress VB sessions (%d) — using newest", len(live))
+            # Overlapping calls (e.g. a test call during a real one): prefer the
+            # session we ALREADY hold state for — continuity beats recency; a
+            # conversation must not flap to whichever call started last.
+            log.warning("multiple in_progress VB sessions (%d)", len(live))
+            for s in live:
+                if str(s["id"]) in self._calls:
+                    return str(s["id"]), str(s.get("caller_phone") or "")
         s = max(live, key=lambda s: s.get("started_at") or "")
         return str(s["id"]), str(s.get("caller_phone") or "")
 
