@@ -126,9 +126,15 @@ def test_lockout_after_three_strikes(conn, store):
     assert "can't verify" in q(svc, op="verify", pin="4242")
 
 
-def test_kb_ops_require_verification_then_hit_sqlite(conn, store):
+def test_kb_reads_are_open_writes_are_gated(conn, store):
     svc = _services(conn, store)
-    assert "isn't verified" in q(svc, op="search_gems", city="kobe", query="onsen")
+    # exploring is the front door: search/get need NO account
+    out = q(svc, op="search_gems", city="kobe", query="quiet onsen")
+    assert "kobe-kin-no-yu" in out
+    assert "650 yen" in q(svc, op="get_gem", id="kin_no_yu")
+    # memory/gem-writes still need one — refusal offers the account, gently
+    assert "needs an account" in q(svc, op="remember", note="loves onsen")
+    assert "needs an account" in q(svc, op="add_gem", name="X", city="kobe", pitch="Y")
     q(svc, op="verify", pin="4242")
     out = q(svc, op="search_gems", city="kobe", query="quiet onsen")
     assert "kobe-kin-no-yu" in out and "ground the recommendation" in out

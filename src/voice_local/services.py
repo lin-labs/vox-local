@@ -334,16 +334,17 @@ class CallServices:
     # ---- KB (SQLite-native) -----------------------------------------------------------
 
     def _kb_gate_hint(self) -> dict | None:
+        """Write-ish KB ops need a verified account. READS (search/get) don't:
+        exploring the city is the front door of the experience — identity only
+        enters when the caller wants something arranged."""
         if self.gate.verified is None:
             return {"ok": False, "data": None,
-                    "say_hint": "the caller isn't verified yet — politely complete "
-                                "verification before sharing recommendations."}
+                    "say_hint": "this needs an account — if the caller wants it, offer "
+                                "to set one up (or verify a returning caller); otherwise "
+                                "continue the conversation naturally."}
         return None
 
     async def _kb_search(self, payload: dict) -> None:
-        if (refuse := self._kb_gate_hint()) is not None:
-            await self._send("kb_result", refuse)
-            return
         gems = kb.search_gems(self._conn, city=str(payload.get("city", "")),
                               query=str(payload.get("query", "")),
                               tags=str(payload.get("tags", "")))
@@ -355,9 +356,6 @@ class CallServices:
                          "knowledge, clearly flagged as off-book.")})
 
     async def _kb_get(self, payload: dict) -> None:
-        if (refuse := self._kb_gate_hint()) is not None:
-            await self._send("kb_result", refuse)
-            return
         gem = kb.get_gem(self._conn, str(payload.get("id", "")))
         await self._send("kb_result", {
             "ok": gem is not None, "data": gem,
