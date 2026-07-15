@@ -218,14 +218,17 @@ class PuffoClient:
 
 
 async def ensure_user_channel(client: PuffoClient, store, account, destination: str, *,
-                              space_id: str, fulfiller_slug: str) -> str:
+                              space_id: str, fulfiller_slug: str,
+                              invite_slugs: list[str] | None = None) -> str:
     """The caller's per-destination channel id, creating it on first use.
 
-    Channels are named ``<destination-slug>-<account_number>`` (e.g. kobe-470400)
-    inside the bot-owned space, the fulfiller is invited so a human sees the new
-    channel, and the mapping is persisted on the account keyed by destination slug.
-    On creation failure the client's default (shared) channel is returned — booking
-    degrades to the old single-channel behavior rather than breaking the call."""
+    Channels are named ``<destination-slug>-<account_number>`` (e.g. japan-470400)
+    inside the bot-owned space; the standing membership (`invite_slugs`, always
+    including the fulfiller) is invited so the humans and agents who coordinate
+    bookings see every new guest channel. The mapping is persisted on the account
+    keyed by destination slug. On creation failure the client's default (shared)
+    channel is returned — booking degrades to the old single-channel behavior
+    rather than breaking the call."""
     slug = _slug(destination)
     existing = account.channels.get(slug, "")
     if existing:
@@ -236,9 +239,10 @@ async def ensure_user_channel(client: PuffoClient, store, account, destination: 
         log.warning("could not create user channel %r — falling back to the shared "
                     "channel %s", name, client.channel_id)
         return client.channel_id
-    if fulfiller_slug and not await client.invite(fulfiller_slug, channel_id):
-        log.warning("could not invite fulfiller %s into %s (%s)",
-                    fulfiller_slug, name, channel_id)
+    invitees = list(dict.fromkeys([*(invite_slugs or []), fulfiller_slug]))
+    for member in filter(None, invitees):
+        if not await client.invite(member, channel_id):
+            log.warning("could not invite %s into %s (%s)", member, name, channel_id)
     account.channels[slug] = channel_id
     store.save(account)
     return channel_id

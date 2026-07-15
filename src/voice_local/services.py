@@ -81,6 +81,7 @@ class CallServices:
                  puffo: tuple | None = None, caller_id: str = "",
                  destination: str = "", grok=None,
                  fulfiller_slug: str = "", space_id: str = "",
+                 channel_invites: list[str] | None = None,
                  send: Callable[[str, dict], Awaitable[None]]) -> None:
         self._conn = conn
         self._store = store
@@ -90,6 +91,7 @@ class CallServices:
         self._grok = grok
         self._fulfiller = fulfiller_slug
         self._space_id = space_id
+        self._channel_invites = channel_invites or []
         self._send = send              # async (action, payload) -> queue for the reply
         self._seen_notes: set[str] = set()
         # The host's notebook: notes taken BEFORE an account exists are buffered for
@@ -308,7 +310,8 @@ class CallServices:
             return client.channel_id, ""
         channel_id = await ensure_user_channel(
             client, self._store, account, self._destination,
-            space_id=self._space_id, fulfiller_slug=self._fulfiller)
+            space_id=self._space_id, fulfiller_slug=self._fulfiller,
+            invite_slugs=self._channel_invites)
         if channel_id and channel_id != client.channel_id:
             return channel_id, ""
         return channel_id, (" WARNING: their private booking channel could NOT be set "

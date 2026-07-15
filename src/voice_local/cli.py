@@ -87,11 +87,17 @@ async def _run_serve(args) -> int:
 
         grok = GrokChat(os.environ["XAI_API_KEY"])
 
+    channel_invites = [s.strip() for s in
+                       os.environ.get("VOX_LOCAL_CHANNEL_INVITES",
+                                      os.environ.get("VOICE_LOCAL_CHANNEL_INVITES", "")
+                                      ).split(",") if s.strip()]
+
     def services_factory(*, caller_id: str, send):
         return CallServices(conn=conn, store=store, puffo=puffo, caller_id=caller_id,
                             destination=destination, grok=grok,
                             fulfiller_slug=os.environ.get("PUFFO_FULFILLER_SLUG", ""),
-                            space_id=os.environ.get("PUFFO_SPACE_ID", ""), send=send)
+                            space_id=os.environ.get("PUFFO_SPACE_ID", ""),
+                            channel_invites=channel_invites, send=send)
 
     backend = VBBackend(services_factory=services_factory, api_key=api_key,
                         agent_id=os.environ.get("VB_AGENT_ID", ""))
