@@ -232,8 +232,11 @@ TOOL_DESCRIPTION = (
     'conversation) | {"op":"get_gem","id":'
     '"<gem id>"} | {"op":"remember","note":"..."} | {"op":"add_gem","name":"...",'
     '"city":"kobe","pitch":"..."} | {"op":"booking_establish","location":"...",'
-    '"start_date":"YYYY-MM-DD","days":3,"reason":"..."} | {"op":"booking_request",'
-    '"kind":"explore|confirmed|update|canceled","details":"..."} | '
+    '"start_date":"YYYY-MM-DD","days":3,"reason":"..."} (trip context — no thread) | '
+    '{"op":"booking_request","kind":"explore|confirmed|update|canceled|booked",'
+    '"title":"Shinkansen from Nagoya to Osaka","details":"..."} (ONE booking item = '
+    "ONE thread named by its short human title; update/canceled/booked post the "
+    'status back onto that item) | '
     '{"op":"check_updates"}. The response is authoritative guidance to act on '
     "immediately."
 )

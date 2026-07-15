@@ -97,11 +97,18 @@ def _slug(text: str) -> str:
     return re.sub(r"-{2,}", "-", re.sub(r"[^a-z0-9]+", "-", str(text).lower())).strip("-")
 
 
-def booking_thread_name(location: str, start_date: str, days: object, reason: str = "") -> str:
-    """Short coordination title: `[booking] <location> <date> <N> days`. The reason is
-    NOT part of the name (it was producing unreadable multi-clause slugs) — it's posted
-    as context inside the thread instead. One trip (location+date+days) = one thread."""
-    return f"[booking] {_slug(location)} {_slug(start_date)} {_slug(str(days))} days"
+def booking_thread_title(tool: str, title: str) -> str:
+    """Human-relatable thread head: `[booking] Shinkansen from Nagoya to Osaka`
+    (or `[explore] ...` when the thread exists purely to research something).
+    ONE thread = ONE booking item; status changes are posted back into the
+    thread echoing this title with a new tag ([booked], [booking-canceled]) so
+    the latest message shows where things stand at a glance."""
+    prefix = "[explore]" if tool == "explore_booking" else "[booking]"
+    return f"{prefix} {' '.join(str(title).split())}"
+
+
+def _norm_title(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
 
 
 def is_resolution(event: dict, *, thread_root: str, fulfiller: str, request_id: str = "",
@@ -339,6 +346,7 @@ class BookingSession:
         "confirm_booking": "[booking-confirmed]",
         "update_booking": "[booking-update]",
         "cancel_booking": "[booking-canceled]",
+        "mark_booked": "[booked]",
     }
 
     def __init__(self, *, client: PuffoClient, listener: PuffoListener, account,
@@ -355,8 +363,9 @@ class BookingSession:
         self._bus = bus
         self._inject = inject  # async (text: str) -> None into the live session
         self._timeout_s = timeout_s
-        self.thread_root: str = ""   # active trip thread for this call
+        self.thread_root: str = ""   # most recently touched ITEM thread this call
         self.thread_name: str = ""
+        self.trip_context: str = ""  # "Nagoya, 2026-12-15, 2 days, family trip"
         self._watchers: set[asyncio.Task] = set()
         self._last_request: tuple = (None, 0.0)  # (tag+details key, monotonic ts)
         # Everything filed this call, for the end-of-call [booking-itinerary] post:
@@ -370,65 +379,93 @@ class BookingSession:
             await self._bus.publish(name, args)
 
     async def establish_case(self, location: str, start_date: str, days, reason: str) -> str:
-        """Open (or reuse) the trip thread: post the ROOT message named exactly
-        `<location>-<startDate>-<days>-<reason-slug>` and persist its envelope id in
-        the account's booking_threads keyed by that name."""
-        name = booking_thread_name(location, start_date, days, reason)
-        existing = self.account.booking_threads.get(name, "")
-        if existing:
-            self.thread_root, self.thread_name = existing, name
-            await self._publish("booking_thread", {"name": name, "root": existing, "reused": True})
-            return (f"existing booking thread '{name}' reopened — use the booking tools to "
-                    f"explore, confirm, update, or cancel; keep chatting meanwhile.")
-        env_id = await self._client.send(name, channel=self.channel_id)
-        if not env_id:
-            return "could not reach the booking channel — apologize and offer to try again later."
-        self.account.booking_threads[name] = env_id
-        self._store.save(self.account)
-        self.thread_root, self.thread_name = env_id, name
-        if reason.strip() or self._fulfiller:
-            # The reason rides INSIDE the thread (the title stays short by design),
-            # and the fulfiller is @-tagged so every thread that needs her work
-            # notifies her from message one.
-            mention = f"@{self._fulfiller} " if self._fulfiller else ""
-            await self._client.send(f"[booking-context] {mention}{reason.strip()}".strip(),
-                                    thread=env_id, channel=self.channel_id)
-        await self._publish("booking_thread", {"name": name, "root": env_id, "reused": False})
-        return (f"booking thread '{name}' opened — use explore/confirm/update/cancel tools "
-                f"for requests; keep chatting meanwhile.")
+        """Record the trip's shape for this call. No thread is opened here —
+        every booking ITEM gets its own human-titled thread at request time;
+        the trip context rides inside each item's first message instead."""
+        bits = [p for p in (str(location).strip(), str(start_date).strip(),
+                            f"{days} days" if str(days).strip() else "",
+                            str(reason).strip()) if p]
+        self.trip_context = ", ".join(bits)
+        await self._publish("booking_trip", {"context": self.trip_context})
+        return ("trip noted — now file EACH booking or exploration as its own thread: "
+                "booking_request with kind and a short human title naming the single "
+                "thing (e.g. 'Shinkansen from Nagoya to Osaka', 'Ryokan night in "
+                "Hakone'); keep chatting meanwhile.")
 
-    async def request(self, tool: str, details: str) -> str:
-        """explore/confirm/update/cancel — post `[tag] details` into the trip thread and
-        watch for the fulfiller's reply without blocking the conversation."""
+    def _find_thread(self, title: str) -> tuple[str, str]:
+        """(name, root) of the existing item thread best matching `title`."""
+        want = _norm_title(title)
+        if not want:
+            return "", ""
+        for name, root in reversed(list(self.account.booking_threads.items())):
+            have = _norm_title(re.sub(r"^\[[a-z-]+\]\s*", "", name))
+            if have and (have == want or want in have or have in want):
+                return name, root
+        return "", ""
+
+    async def request(self, tool: str, details: str, title: str = "") -> str:
+        """One booking item = one human-titled thread. explore/confirmed open the
+        thread (`[explore]/[booking] <title>`) and post the details inside;
+        update/canceled/booked post back into the matching thread echoing the
+        title with the new tag, so the latest message reads as the item's status.
+        A watcher injects the fulfiller's first reply without blocking the call."""
         tag = self.TAGS[tool]
-        if not self.thread_root:
-            return "no booking thread yet — call establish_case with the trip details first."
+        title = " ".join(str(title).split())
         # Voice models retry tool calls while awaiting slow replies; an identical
         # request within a minute is a retry, not a new ask — don't double-post.
-        key = (tag, " ".join(details.split())[:200])
+        key = (tag, title, " ".join(details.split())[:200])
         if key == self._last_request[0] and time.monotonic() - self._last_request[1] < 60:
             return ("SILENT: this exact request is already filed — say absolutely nothing "
                     "about it; do not re-announce; continue the conversation naturally.")
         self._last_request = (key, time.monotonic())
+        name, root = self._find_thread(title)
+        if not root and tool in ("update_booking", "cancel_booking", "mark_booked"):
+            name, root = self.thread_name, self.thread_root   # fall back to active item
+        if not root:
+            if not title:
+                return ("this booking needs a short human 'title' naming the single "
+                        "thing (e.g. 'Shinkansen from Nagoya to Osaka') — resend "
+                        "booking_request with a title.")
+            name = booking_thread_title(tool, title)
+            root = await self._client.send(name, channel=self.channel_id)
+            if not root:
+                return "could not reach the booking channel — apologize and offer to try again later."
+            self.account.booking_threads[name] = root
+            self._store.save(self.account)
+            await self._publish("booking_thread", {"name": name, "root": root, "reused": False})
+        self.thread_root, self.thread_name = root, name
+        # The canonical thread head wins over the model's re-typed casing.
+        display = re.sub(r"^\[[a-z-]+\]\s*", "", name).strip() or title
         mention = f"@{self._fulfiller} " if self._fulfiller else ""
-        env_id = await self._client.send(f"{tag} {mention}{details}", thread=self.thread_root,
-                                         channel=self.channel_id)
+        trip = f" (trip: {self.trip_context})" if self.trip_context else ""
+        if tool in ("explore_booking", "confirm_booking"):
+            text = f"{tag} {mention}{details}{trip}"
+        else:
+            # Status change: echo the title with the new tag so the thread's
+            # newest message shows where the item stands at a glance.
+            text = f"{tag} {display}" + (f" — {mention}{details}" if details.strip() else "")
+        env_id = await self._client.send(text, thread=root, channel=self.channel_id)
         if not env_id:
             return "could not post the request — apologize and offer to try again."
         await self._publish("booking_request", {"tag": tag, "details": details,
-                                                "thread": self.thread_name, "envelope_id": env_id})
-        entry = {"tag": tag, "details": details, "status": "pending", "reply": ""}
+                                                "thread": name, "envelope_id": env_id})
+        if tool == "mark_booked":
+            return f"marked booked: {display}. Keep chatting naturally."
+        entry = {"tag": tag, "title": display, "details": details,
+                 "status": "pending", "reply": ""}
         self._activity.append(entry)
-        task = asyncio.create_task(self._watch(tag, env_id, entry),
+        task = asyncio.create_task(self._watch(tag, env_id, entry, thread_root=root),
                                    name=f"booking-watch-{env_id}")
         self._watchers.add(task)
         task.add_done_callback(self._watchers.discard)
         return ("request posted to the human fulfiller; keep chatting naturally — you'll get "
                 "a [Booking update] message when they respond (usually a few minutes).")
 
-    async def _watch(self, tag: str, request_id: str, entry: dict | None = None) -> None:
-        """Wait for the FIRST fulfiller message in our thread newer than the request;
-        inject it. On timeout, inject the retry/cancel notice. Never raises."""
+    async def _watch(self, tag: str, request_id: str, entry: dict | None = None, *,
+                     thread_root: str = "") -> None:
+        """Wait for the FIRST fulfiller message in the item's thread newer than the
+        request; inject it. On timeout, inject the retry/cancel notice. Never raises."""
+        thread_root = thread_root or self.thread_root
         q = self._listener.subscribe()
         try:
             deadline = time.monotonic() + self._timeout_s
@@ -437,7 +474,7 @@ class BookingSession:
                 if remaining <= 0:
                     raise asyncio.TimeoutError
                 event = await asyncio.wait_for(q.get(), timeout=remaining)
-                if is_resolution(event, thread_root=self.thread_root, fulfiller=self._fulfiller,
+                if is_resolution(event, thread_root=thread_root, fulfiller=self._fulfiller,
                                  request_id=request_id, channel_id=self.channel_id):
                     text = str(event.get("content", "")).strip()
                     if entry is not None:
@@ -470,21 +507,20 @@ class BookingSession:
         """End-of-call consolidation: one [booking-itinerary] message stating every
         request filed this call and where it stands, so the thread reads as a single
         coordinated plan instead of scattered asks. Best-effort — never raises."""
-        if not self._activity or not self.thread_root:
+        if not self._activity:
             return
         status_word = {"pending": "awaiting partner reply", "timeout": "no reply (timed out)"}
-        lines = [f"[booking-itinerary] {self.thread_name} — call summary "
-                 f"({len(self._activity)} request(s)):"]
+        lines = [f"[booking-itinerary] call summary ({len(self._activity)} request(s)):"]
         for i, e in enumerate(self._activity, 1):
-            line = f"{i}. {e['tag']} {e['details'][:200]}"
+            line = f"{i}. {e['tag']} {e.get('title', '')}: {e['details'][:200]}"
             if e["status"] == "replied":
                 line += f" -> partner: {e['reply'][:200]}"
             else:
                 line += f" -> {status_word.get(e['status'], e['status'])}"
             lines.append(line)
         try:
-            await self._client.send("\n".join(lines), thread=self.thread_root,
-                                    channel=self.channel_id)
+            # Channel-level post: the summary spans every item thread this call.
+            await self._client.send("\n".join(lines), channel=self.channel_id)
         except Exception as exc:  # noqa: BLE001 - teardown must not raise
             log.warning("itinerary post failed: %r", exc)
 

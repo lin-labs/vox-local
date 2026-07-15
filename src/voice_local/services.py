@@ -35,7 +35,8 @@ from voice_local.trip_context import load_trip_context, trip_context_text
 log = logging.getLogger("voice_local.services")
 
 KIND_TO_TOOL = {"explore": "explore_booking", "confirmed": "confirm_booking",
-                "update": "update_booking", "canceled": "cancel_booking"}
+                "update": "update_booking", "canceled": "cancel_booking",
+                "booked": "mark_booked"}
 
 _BOOKING_FAIL_PREFIXES = ("could not", "no booking thread")
 
@@ -702,9 +703,10 @@ class CallServices:
             await self._send("booking_result", {
                 "ok": False, "detail": f"unknown kind: {payload.get('kind')!r}",
                 "say_hint": "booking_request kind must be explore, confirmed, update, "
-                            "or canceled."})
+                            "canceled, or booked."})
             return
-        detail = await booking.request(tool, str(payload.get("details", "")))
+        detail = await booking.request(tool, str(payload.get("details", "")),
+                                       title=str(payload.get("title", "")))
         if detail.startswith("that request is already filed") or detail.startswith("SILENT"):
             log.info("duplicate booking_request ignored")
             return

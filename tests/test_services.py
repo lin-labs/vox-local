@@ -192,17 +192,24 @@ def test_booking_flow_short_thread_and_date_bump(conn, store, fake_puffo):
     q(svc, op="verify", pin="4242")
     out = q(svc, op="booking_establish", location="Kobe", start_date="2024-12-15",
             days=2, reason="counter dinner")
-    assert "[booking] kobe" in out and "2 days" in out
+    assert "trip noted" in out and "own thread" in out
     assert "in the past" in out and "confirm the year" in out   # date guard
+    # a request without a title is bounced with guidance, nothing posted
     out = q(svc, op="booking_request", kind="explore", details="dinner for two")
+    assert "title" in out and not _sent(fake_puffo)
+    out = q(svc, op="booking_request", kind="explore",
+            title="Counter dinner at Sky Bar", details="dinner for two")
     assert "request posted" in out
+    out = q(svc, op="booking_request", kind="booked", title="counter dinner at sky bar",
+            details="7pm confirmed")
+    assert "marked booked" in out
     sends = _sent(fake_puffo)
     texts = [a[a.index("send") + 1] for a in sends]
-    assert texts[0].startswith("[booking] kobe 20") and texts[0].endswith("2 days")
-    # the fulfiller is @-tagged in the context post and EVERY request message,
-    # so each thread that needs her work notifies her
-    assert texts[1] == f"[booking-context] @{FULFILLER} counter dinner"
-    assert texts[2] == f"[booking-explore] @{FULFILLER} dinner for two"
+    assert texts[0] == "[explore] Counter dinner at Sky Bar"       # human thread head
+    assert texts[1].startswith(f"[booking-explore] @{FULFILLER} dinner for two")
+    assert "(trip: Kobe" in texts[1]                                # context rides inside
+    # status echoes the title so the newest message reads at a glance
+    assert texts[2].startswith("[booked] Counter dinner at Sky Bar")
     asyncio.run(svc.close())
     itinerary = _sent(fake_puffo)[-1]
     assert itinerary[itinerary.index("send") + 1].startswith("[booking-itinerary]")
