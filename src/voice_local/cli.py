@@ -66,6 +66,7 @@ async def _run_serve(args) -> int:
     port = int(os.environ.get("VOICE_LOCAL_PORT", "7780"))
     conn = kbdb.connect(_db_path())
     store = AccountStore(_state_dir() / "accounts")
+    pending_store = AccountStore(_state_dir() / "accounts-pending")
     destination = os.environ.get("VOICE_LOCAL_DESTINATION", "kobe").lower()
 
     puffo = None
@@ -93,7 +94,8 @@ async def _run_serve(args) -> int:
                                       ).split(",") if s.strip()]
 
     def services_factory(*, caller_id: str, send):
-        return CallServices(conn=conn, store=store, puffo=puffo, caller_id=caller_id,
+        return CallServices(conn=conn, store=store, pending_store=pending_store,
+                            puffo=puffo, caller_id=caller_id,
                             destination=destination, grok=grok,
                             fulfiller_slug=os.environ.get("PUFFO_FULFILLER_SLUG", ""),
                             space_id=os.environ.get("PUFFO_SPACE_ID", ""),

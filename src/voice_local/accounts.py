@@ -90,6 +90,11 @@ class AccountStore:
         p.write_text(json.dumps(account.to_dict(), indent=2, ensure_ascii=False))
         return p
 
+    def remove(self, account_number: str) -> None:
+        p = self.dir / f"{account_number}.json"
+        if p.exists():
+            p.unlink()
+
 
 class AuthGate:
     """Per-call verification state: which account caller-ID matched (secret until the

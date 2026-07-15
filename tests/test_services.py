@@ -254,3 +254,71 @@ def test_notebook_notes_flush_into_profile_on_register(conn, store, fake_puffo):
     acct = next(a for a in store.load_all() if a.name == "Mika Sato")
     brief = db.profile_brief(conn, acct.account_number)
     assert "Tokyo then Hakone" in brief and "loves onsen" in brief  # no re-asking
+
+
+def _pending_services(conn, store, tmp_path, *, caller_id="+15550001111"):
+    pending_store = AccountStore(tmp_path / "accounts-pending")
+    pending: list[tuple[str, dict]] = []
+
+    async def send(action, payload):
+        pending.append((action, payload))
+
+    svc = CallServices(conn=conn, store=store, pending_store=pending_store,
+                       puffo=None, caller_id=caller_id, destination="", grok=None,
+                       fulfiller_slug=FULFILLER, space_id="sp_test", send=send)
+    svc._test_pending = pending
+    return svc, pending_store
+
+
+def test_pre_account_note_parks_a_pending_account(conn, store, tmp_path):
+    svc, pending_store = _pending_services(conn, store, tmp_path)
+    q(svc, op="remember", note="loves quiet onsen mornings")
+    parked = pending_store.lookup_by_phone("+15550001111")
+    assert parked is not None and parked.pin == ""
+    notes = conn.execute("SELECT note FROM notes WHERE account=?",
+                         (parked.account_number,)).fetchall()
+    assert [n["note"] for n in notes] == ["loves quiet onsen mornings"]
+
+
+def test_register_promotes_pending_number_and_clears_parking(conn, store, tmp_path):
+    svc, pending_store = _pending_services(conn, store, tmp_path)
+    q(svc, op="remember", note="two people, mid-November")
+    parked = pending_store.lookup_by_phone("+15550001111")
+    out = q(svc, op="register", name="Mika Tanaka")
+    assert parked.account_number in out            # same number promoted
+    assert store.get(parked.account_number) is not None
+    assert pending_store.get(parked.account_number) is None
+    row = conn.execute("SELECT name FROM profiles WHERE account=?",
+                       (parked.account_number,)).fetchone()
+    assert row["name"] == "Mika Tanaka"
+    notes = conn.execute("SELECT note FROM notes WHERE account=?",
+                         (parked.account_number,)).fetchall()
+    assert len(notes) == 1
+
+
+def test_verify_migrates_pending_notes_into_existing_account(conn, store, tmp_path):
+    # Same phone as the registered account: earlier call parked notes pre-auth.
+    svc, pending_store = _pending_services(conn, store, tmp_path, caller_id=BOYAN)
+    parked = Account(account_number="777777", pin="", name="", phones=[BOYAN])
+    pending_store.save(parked)
+    db.add_note(conn, "777777", "wants a Fuji-side seat")
+    svc._pending_account = pending_store.lookup_by_phone(BOYAN)
+    q(svc, op="verify", pin="4242")
+    assert svc.gate.verified.account_number == "123456"
+    moved = conn.execute("SELECT note FROM notes WHERE account='123456'").fetchall()
+    assert "wants a Fuji-side seat" in [n["note"] for n in moved]
+    assert conn.execute("SELECT count(*) FROM notes WHERE account='777777'"
+                        ).fetchone()[0] == 0
+    assert pending_store.get("777777") is None
+
+
+def test_pending_notebook_resurfaces_on_next_call(conn, store, tmp_path):
+    svc, pending_store = _pending_services(conn, store, tmp_path)
+    q(svc, op="remember", note="dreams of Hakone ropeway")
+    # New call, same phone, fresh CallServices: the parked notebook rides back in.
+    svc2, _ = _pending_services(conn, store, tmp_path)
+    svc2._pending_store = pending_store
+    svc2._pending_account = pending_store.lookup_by_phone("+15550001111")
+    out = q(svc2, op="search_gems", city="hakone", query="ropeway")
+    assert any(a == "caller_context" and "dreams of Hakone ropeway" in p.get("brief", "")
+               for a, p in svc2._test_pending)

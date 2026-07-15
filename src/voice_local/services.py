@@ -78,6 +78,7 @@ class CallServices:
     per-destination Puffo channel."""
 
     def __init__(self, *, conn: sqlite3.Connection, store: AccountStore,
+                 pending_store: AccountStore | None = None,
                  puffo: tuple | None = None, caller_id: str = "",
                  destination: str = "", grok=None,
                  fulfiller_slug: str = "", space_id: str = "",
@@ -94,11 +95,18 @@ class CallServices:
         self._channel_invites = channel_invites or []
         self._send = send              # async (action, payload) -> queue for the reply
         self._seen_notes: set[str] = set()
-        # The host's notebook: notes taken BEFORE an account exists are buffered for
-        # the call and flushed into the profile the moment an account is created or
-        # verified — the caller is never asked to repeat what they already said.
+        # The host's notebook before an account exists: with a pending_store, the
+        # first note mints a real account number parked in accounts-pending/ (no PIN,
+        # no booking channel) and notes persist under it immediately — surviving
+        # hangups. Registration promotes that same number to a full account; verify
+        # into a different account migrates the notes. Without a pending_store the
+        # notes are buffered in memory for this call only.
+        self._pending_store = pending_store
         self._pending_notes: list[str] = []
+        self._pending_context_sent = False
         matched = store.lookup_by_phone(caller_id) if caller_id else None
+        self._pending_account = (pending_store.lookup_by_phone(caller_id)
+                                 if pending_store is not None and caller_id else None)
         self.gate = AuthGate(store, matched=matched)
         self.booking: BookingSession | None = None
 
@@ -134,6 +142,23 @@ class CallServices:
                 self.gate.matched = matched
                 if not self._caller_id:
                     self._caller_id = agent_phone
+        if (agent_phone and self._pending_store is not None
+                and self._pending_account is None and self.gate.matched is None
+                and self.gate.verified is None):
+            self._pending_account = self._pending_store.lookup_by_phone(agent_phone)
+            if self._pending_account is not None and not self._caller_id:
+                self._caller_id = agent_phone
+        # A returning caller with a parked (pre-registration) notebook: surface it
+        # once, silently — Koyuki must not re-ask, but bookings still need an account.
+        if (self._pending_account is not None and not self._pending_context_sent
+                and self.gate.matched is None and self.gate.verified is None):
+            self._pending_context_sent = True
+            brief = kb.profile_brief(self._conn, self._pending_account.account_number)
+            if brief:
+                await self._send("caller_context", {
+                    "brief": "Returning caller with NO account yet — notebook from "
+                             "earlier calls (never re-ask these; bookings still require "
+                             "creating the account):\n" + brief, "trip_summary": ""})
         captured: list[tuple[str, dict]] = []
         outer_send = self._send
 
@@ -224,6 +249,7 @@ class CallServices:
                         "Resolve every relative date ('January', 'next week') against "
                         "TODAY — never into the past."})
         self._flush_notes(account.account_number)
+        self._adopt_pending(account.account_number)
         channel_id, channel_warn = await self._ensure_channel(account)
         if channel_warn:
             await self._send("auth_result", {"ok": True, "say_hint": channel_warn.strip()})
@@ -245,13 +271,19 @@ class CallServices:
         pin = str(payload.get("pin", "")).strip()
         if not pin:
             pin = "".join(random.choices("0123456789", k=4))
-        number = self._new_account_number()
+        # Promote the parked pending account when one exists: the caller keeps the
+        # number their notes already live under; only NOW does the account become
+        # real (PIN, file in accounts/, booking channel).
+        number = (self._pending_account.account_number
+                  if self._pending_account is not None
+                  else self._new_account_number())
         account = Account(account_number=number, pin=pin, name=name,
                           phones=[self._caller_id] if self._caller_id else [])
         self._store.save(account)
         kb.ensure_profile(self._conn, number, name=name, phone=self._caller_id)
         self.gate.verified = account
         self._flush_notes(number)
+        self._adopt_pending(number)
         channel_id, channel_warn = await self._ensure_channel(account)
         self._start_booking(account, channel_id)
         phone_line = (f"Their account is linked to the number they're calling from "
@@ -274,7 +306,9 @@ class CallServices:
     def _new_account_number(self) -> str:
         while True:
             number = str(random.randrange(100000, 1000000))
-            if self._store.get(number) is None:
+            if self._store.get(number) is None and (
+                    self._pending_store is None
+                    or self._pending_store.get(number) is None):
                 return number
 
     async def _change_pin(self, payload: dict) -> None:
@@ -408,9 +442,15 @@ class CallServices:
             return
         self._seen_notes.add(note_key)
         if self.gate.verified is None:
-            # No account yet: the note goes in the notebook and lands on the profile
-            # automatically at register/verify — never re-ask the caller.
-            self._pending_notes.append(note)
+            # No account yet: park the note under a pending account number so it
+            # survives a hangup; fall back to the in-call buffer without a
+            # pending store. Either way it lands on the profile at register/verify
+            # — never re-ask the caller.
+            pending = self._ensure_pending_account()
+            if pending is not None:
+                kb.add_note(self._conn, pending.account_number, note)
+            else:
+                self._pending_notes.append(note)
         else:
             kb.add_note(self._conn, self.gate.verified.account_number, note)
         await self._send("kb_result", {
@@ -424,6 +464,37 @@ class CallServices:
             log.info("flushed %d pre-account notes to %s",
                      len(self._pending_notes), account_number)
         self._pending_notes.clear()
+
+    def _ensure_pending_account(self) -> Account | None:
+        """The parked pre-registration account: a real minted number in
+        accounts-pending/ with no PIN and no booking channel."""
+        if self._pending_store is None:
+            return None
+        if self._pending_account is None:
+            number = self._new_account_number()
+            self._pending_account = Account(
+                account_number=number, pin="", name="",
+                phones=[self._caller_id] if self._caller_id else [])
+            self._pending_store.save(self._pending_account)
+            kb.ensure_profile(self._conn, number, phone=self._caller_id)
+            log.info("pending account %s parked (notes persist pre-registration)", number)
+        return self._pending_account
+
+    def _adopt_pending(self, account_number: str) -> None:
+        """Fold the parked account into a real one: same number at registration
+        (file just moves out of accounts-pending/), or migrate the notes when the
+        caller verified into a different existing account."""
+        if self._pending_account is None or self._pending_store is None:
+            return
+        old = self._pending_account.account_number
+        if old != account_number:
+            self._conn.execute("UPDATE notes SET account=? WHERE account=?",
+                               (account_number, old))
+            self._conn.execute("DELETE FROM profiles WHERE account=?", (old,))
+            self._conn.commit()
+            log.info("migrated pending notes %s -> %s", old, account_number)
+        self._pending_store.remove(old)
+        self._pending_account = None
 
     async def _kb_add(self, payload: dict) -> None:
         if (refuse := self._kb_gate_hint()) is not None:

@@ -20,7 +20,11 @@ The legacy markdown-era docs live in
    with a 3-strike gate (server decides; the agent only relays digits),
    registration that mints account+PIN on the phone, per-guest profiles and
    durable notes, and a fresh per-call trip summary parsed from the guest's
-   booking channel.
+   booking channel. Before registration, the first `remember` parks a real
+   account number in `<state>/accounts-pending/` (no PIN, no channel) so notes
+   persist across hangups; registration promotes that same number to a full
+   account (only then is the booking channel created), and verifying into an
+   existing account migrates the parked notes.
 3. **Puffo booking coordination** — per-guest destination channels
    (`kobe-<account>`), one short thread per trip
    (`[booking] kobe 2026-12-15 2 days`), tagged requests

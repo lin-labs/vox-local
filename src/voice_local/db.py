@@ -137,6 +137,11 @@ def ensure_profile(conn: sqlite3.Connection, account: str, *, name: str = "",
     conn.execute(
         "INSERT INTO profiles (account, name, phones, updated) VALUES (?,?,?,?) "
         "ON CONFLICT(account) DO NOTHING", (account, name, phone, _today()))
+    if name:
+        # A pending (pre-registration) profile is created nameless; registration
+        # supplies the name later — fill it in without clobbering an existing one.
+        conn.execute("UPDATE profiles SET name=? WHERE account=? AND name=''",
+                     (name, account))
     conn.commit()
 
 
