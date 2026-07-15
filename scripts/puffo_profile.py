@@ -6,7 +6,12 @@ the puffo-agent venv's crypto stack.
 
 Usage (run with ~/.venvs/puffo-agent/bin/python):
   puffo_profile.py <slug> [--display-name X] [--avatar-url URL]
-                          [--role TEXT] [--role-short TEXT] [--show]
+                          [--avatar-file PATH] [--role TEXT]
+                          [--role-short TEXT] [--show]
+
+--avatar-file uploads the image to the relay blob store first and points
+avatar_url at the resulting blob — the Puffo web app only renders relay-hosted
+avatars, so prefer this over an external --avatar-url.
 """
 import argparse
 import asyncio
@@ -36,11 +41,23 @@ async def main() -> None:
     ap.add_argument("slug")
     ap.add_argument("--display-name")
     ap.add_argument("--avatar-url")
+    ap.add_argument("--avatar-file")
     ap.add_argument("--role")
     ap.add_argument("--role-short")
     ap.add_argument("--show", action="store_true")
     args = ap.parse_args()
     key, subkey_id, base = _key_and_session(args.slug)
+    if args.avatar_file:
+        img = Path(args.avatar_file).read_bytes()
+        auth = sign_request(key, args.slug, subkey_id, "POST", "/blobs/upload", img)
+        headers = auth.to_dict()
+        headers["content-type"] = "application/octet-stream"
+        async with aiohttp.ClientSession() as http:
+            async with http.post(base.rstrip("/") + "/blobs/upload",
+                                 data=img, headers=headers) as r:
+                blob = json.loads(await r.text())
+                print("blob upload", r.status, blob)
+        args.avatar_url = f"{base.rstrip('/')}/blobs/{blob['blob_id']}"
     patch = {k: v for k, v in (("display_name", args.display_name),
                                ("avatar_url", args.avatar_url),
                                ("role", args.role),
