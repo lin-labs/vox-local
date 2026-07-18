@@ -51,6 +51,17 @@ def _today_line() -> str:
     return f"Today is {today.strftime('%A, %B %d, %Y')} ({today.isoformat()})."
 
 
+def _mint_pin(lucky: str = "") -> str:
+    """Default 4-digit PIN. With a caller's lucky digit, weave it in so it shows
+    up AT LEAST twice — a PIN that carries their number is one they'll keep."""
+    lucky = lucky[:1] if lucky[:1].isdigit() else ""
+    if not lucky:
+        return "".join(random.choices("0123456789", k=4))
+    digits = [lucky, lucky] + random.choices("0123456789", k=2)
+    random.shuffle(digits)
+    return "".join(digits)
+
+
 def normalize_start_date(raw: str) -> tuple[str, str]:
     """(normalized YYYY-MM-DD, note). A past date is bumped to its NEXT future
     occurrence; the note tells the agent to confirm the corrected year."""
@@ -331,7 +342,7 @@ class CallServices:
             return
         pin = str(payload.get("pin", "")).strip()
         if not pin:
-            pin = "".join(random.choices("0123456789", k=4))
+            pin = _mint_pin(str(payload.get("lucky", "")).strip())
         # Promote the parked pending account when one exists: the caller keeps the
         # number their notes already live under; only NOW does the account become
         # real (PIN, file in accounts/, booking channel).

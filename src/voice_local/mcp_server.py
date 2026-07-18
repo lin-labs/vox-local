@@ -267,7 +267,8 @@ TOOL_DESCRIPTION = (
     "Backend concierge system for account verification, registration, PIN changes, "
     "local hidden-gem knowledge base, memory notes, and bookings. Send ONE JSON object "
     'as a string, e.g. {"op":"verify","pin":"4242"} | {"op":"register","name":"Kenji '
-    'Tanaka"} | {"op":"change_pin","new_pin":"5678"} | {"op":"search_gems","city":'
+    'Tanaka","lucky":"7"} (lucky digit optional — the minted PIN then carries it at '
+    'least twice) | {"op":"change_pin","new_pin":"5678"} | {"op":"search_gems","city":'
     '"kobe","query":"onsen quiet morning","tags":"onsen"} | {"op":"city_guide","city":'
     '"<city>"} (the full mental map of a city — fires automatically the first time a '
     "city appears in any query; call it explicitly the moment a city enters the "

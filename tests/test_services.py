@@ -215,6 +215,27 @@ def test_booking_flow_short_thread_and_date_bump(conn, store, fake_puffo):
     assert itinerary[itinerary.index("send") + 1].startswith("[booking-itinerary]")
 
 
+def test_mint_pin_carries_lucky_digit_twice():
+    from voice_local.services import _mint_pin
+    for _ in range(50):
+        pin = _mint_pin("7")
+        assert len(pin) == 4 and pin.count("7") >= 2
+    assert len(_mint_pin("")) == 4          # no lucky digit -> plain random
+    assert len(_mint_pin("x")) == 4         # junk -> plain random
+    assert _mint_pin("42").count("4") >= 2  # multi-digit input -> first digit
+
+
+def test_register_with_lucky_digit_mints_matching_pin(conn, store, fake_puffo):
+    client = PuffoClient(bin=fake_puffo["bin"], server_url="https://fake/relay",
+                         channel_id="ch_test", identity="bot")
+    svc = _services(conn, store, caller_id="+15550009999",
+                    puffo=(client, PuffoListener(client)))
+    out = q(svc, op="register", name="Mika Tanaka", lucky="3")
+    assert "registered — welcome Mika Tanaka" in out
+    acct = store.lookup_by_phone("+15550009999")
+    assert acct is not None and acct.pin.count("3") >= 2
+
+
 def test_normalize_start_date():
     assert normalize_start_date("2099-01-01") == ("2099-01-01", "")
     bumped, note = normalize_start_date("2024-12-15")
