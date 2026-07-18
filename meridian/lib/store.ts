@@ -27,7 +27,7 @@ export interface AppState {
   route: LngLat[] | null;
   camera: CameraCmd | null;
   pulseId: string | null;
-  agentSource: "xai" | "mock" | null;
+  agentSource: "xai" | "claude" | "mock" | null;
   mapFlavor: "mapbox" | "maplibre" | null;
   mapReady: boolean;
   /** live agent activity, e.g. "Searching: kaiseki near Gion" */

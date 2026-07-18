@@ -1,4 +1,6 @@
-/* Conversation loop: xAI realtime voice → live tools → streamed voice reply. */
+/* Conversation loop: xAI realtime voice → live tools → streamed voice reply.
+   When voice is unavailable, typed turns stream from /api/concierge — the
+   Claude agent loop when ANTHROPIC_API_KEY is set, the offline mock otherwise. */
 
 import { useApp } from "@/lib/store";
 import { fastPath } from "@/lib/fastpath";
@@ -175,7 +177,7 @@ function currentInstructions(): string {
   return `${STATIC_SYSTEM}\n\n${dynamicSystem(get().itinerary)}`;
 }
 
-function initialSession() {
+function sessionConfig() {
   return {
     instructions: currentInstructions(),
     reasoning: { effort: "high" },
@@ -219,7 +221,7 @@ async function ensureRealtime(): Promise<XaiRealtimeVoice> {
   const client = getRealtime();
   if (!connecting) {
     connecting = client
-      .connect(initialSession())
+      .connect(sessionConfig())
       .then(() => set({ agentSource: "xai" }))
       .catch((error) => {
         client.close();
@@ -386,7 +388,7 @@ function handleRealtimeEvent(event: RealtimeEvent) {
   switch (event.type) {
     case "input_audio_buffer.speech_started":
       beginTurn();
-      realtime?.updateSession({ instructions: currentInstructions() });
+      realtime?.updateSession(sessionConfig());
       set({ convo: "listening", interim: "", hint: null });
       break;
     case "conversation.item.input_audio_transcription.updated": {
@@ -465,9 +467,11 @@ function handleRealtimeEvent(event: RealtimeEvent) {
   }
 }
 
-// ── Offline typed fallback ───────────────────────────────────────────────────
+// ── Concierge SSE fallback (Claude server-side, mock without a key) ──────────
 
-function applyMockEvent(event: TurnEvent) {
+let turnAbort: AbortController | null = null;
+
+function applyTurnEvent(event: TurnEvent) {
   switch (event.type) {
     case "status":
       set({ narration: event.text });
@@ -500,7 +504,7 @@ function applyMockEvent(event: TurnEvent) {
       break;
     case "done":
       refreshDerived(event.itinerary);
-      set({ agentSource: "mock" });
+      set({ agentSource: event.source });
       finishTurn();
       break;
     case "error":
@@ -511,7 +515,67 @@ function applyMockEvent(event: TurnEvent) {
 
 function runMockTurn() {
   for (const event of mockTurn(get().messages, get().itinerary)) {
-    applyMockEvent(event);
+    applyTurnEvent(event);
+  }
+}
+
+function sanitizeForApi(messages: ChatMsg[]): ChatMsg[] {
+  const trimmed = messages.slice(-16);
+  while (trimmed.length && trimmed[0].role !== "user") trimmed.shift();
+  const out: ChatMsg[] = [];
+  for (const message of trimmed) {
+    const last = out[out.length - 1];
+    if (last && last.role === message.role) last.content += "\n" + message.content;
+    else out.push({ ...message });
+  }
+  return out;
+}
+
+async function runConciergeTurn() {
+  turnAbort?.abort();
+  const ctrl = new AbortController();
+  turnAbort = ctrl;
+  let gotDone = false;
+  try {
+    const res = await fetch("/api/concierge", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: sanitizeForApi(get().messages),
+        itinerary: get().itinerary,
+      }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let index;
+      while ((index = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+        const line = frame.split("\n").find((l) => l.startsWith("data: "));
+        if (!line) continue;
+        try {
+          const event = JSON.parse(line.slice(6)) as TurnEvent;
+          if (event.type === "done") gotDone = true;
+          applyTurnEvent(event);
+        } catch {
+          /* skip malformed frame */
+        }
+      }
+    }
+    if (!gotDone) runMockTurn();
+  } catch (error) {
+    if ((error as Error)?.name === "AbortError") return; // deliberate interrupt
+    if (!gotDone) runMockTurn();
+  } finally {
+    if (turnAbort === ctrl) turnAbort = null;
   }
 }
 
@@ -554,7 +618,7 @@ export async function startListening() {
   set({ convo: "thinking", interim: "", hint: null });
   try {
     const client = await ensureRealtime();
-    client.updateSession({ instructions: currentInstructions() });
+    client.updateSession(sessionConfig());
     await client.startMicrophone();
     set({ convo: "listening" });
   } catch (error) {
@@ -595,6 +659,7 @@ export function toggleOrb() {
 export function interrupt() {
   responseDone = false;
   awaitingToolContinuation = false;
+  turnAbort?.abort();
   realtime?.cancelResponse();
   if (!get().handsFree) realtime?.stopMicrophone();
   set({ convo: "idle", interim: "", narration: "" });
@@ -658,14 +723,12 @@ export async function handleUtterance(raw: string) {
   set({ convo: "thinking" });
   try {
     const client = await ensureRealtime();
-    client.updateSession({ instructions: currentInstructions() });
+    client.updateSession(sessionConfig());
     client.sendText(text);
-  } catch (error) {
-    set({
-      hint: `${String(error)} — using the offline demo.`.slice(0, 180),
-      agentSource: "mock",
-    });
-    runMockTurn();
+  } catch {
+    // Voice is down — hand the turn to the server concierge (Claude when
+    // ANTHROPIC_API_KEY is set, honest mock otherwise).
+    void runConciergeTurn();
   }
 }
 

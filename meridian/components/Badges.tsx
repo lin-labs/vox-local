@@ -11,7 +11,11 @@ export default function Badges() {
   if (mapFlavor === "maplibre")
     notes.push("demo basemap — add NEXT_PUBLIC_MAPBOX_TOKEN for the cinematic globe");
   if (agentSource === "mock")
-    notes.push("offline concierge — add XAI_API_KEY for realtime voice");
+    notes.push(
+      "offline concierge — add XAI_API_KEY for realtime voice or ANTHROPIC_API_KEY for the typed brain"
+    );
+  if (agentSource === "claude")
+    notes.push("Claude concierge — add XAI_API_KEY for realtime voice");
 
   if (!notes.length) return null;
 

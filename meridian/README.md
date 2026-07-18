@@ -30,10 +30,14 @@ target sources `~/.zshrc` before starting Next, so Boyan's local
 | `XAI_API_KEY` | For live voice | Stays server-side and mints five-minute browser client secrets. |
 | `XAI_VOICE_MODEL` | Optional | Defaults to `grok-voice-think-fast-1.0`. |
 | `XAI_VOICE` | Optional | Defaults to `eve`. |
+| `ANTHROPIC_API_KEY` | For the typed brain | Claude agent loop (SSE + web search) when the voice connection is unavailable. Stays server-side. |
+| `CONCIERGE_MODEL` | Optional | Claude model for the typed brain; defaults to `claude-sonnet-5`. |
 | `NEXT_PUBLIC_MAPBOX_TOKEN` | Recommended | Cinematic Mapbox dusk globe; without it, the app uses the keyless MapLibre fallback. |
 
-Without xAI configuration, typed prompts use an honest scripted demo for the
-included destinations. The app never exposes `XAI_API_KEY` to browser code.
+Without xAI configuration, typed prompts stream from the Claude concierge when
+`ANTHROPIC_API_KEY` is set, and otherwise fall back to an honest scripted demo
+for the included destinations. The app never exposes `XAI_API_KEY` or
+`ANTHROPIC_API_KEY` to browser code.
 
 ## Try it
 
@@ -71,6 +75,8 @@ POST /api/realtime-token
 | `lib/orchestrator.ts` | Realtime events, custom tool execution, UI state, and offline fallback. |
 | `lib/agent/system.ts` / `tools.ts` | Concierge protocol and xAI tool schemas. |
 | `lib/agent/ops.ts` | Deterministic itinerary op applier. |
+| `app/api/concierge/route.ts` | Claude SSE agent loop for typed turns (fine-grained tool streaming). |
+| `lib/agent/anthropic.ts` | Claude protocol and Anthropic tool schemas. |
 | `lib/agent/mock.ts` | Keyless typed demo brain. |
 | `lib/mapAdapter.ts` | Mapbox / MapLibre adapter. |
 
@@ -86,6 +92,10 @@ continue the original unrelated `origin/meridian` branch.
 - Browser WebSockets authenticate with the short-lived client secret from the
   server route. Never add `NEXT_PUBLIC_XAI_API_KEY` or otherwise expose the
   long-lived key.
+- Treat every xAI `session.update` as replacement-safe: include VAD,
+  transcription, audio format, tools, and voice whenever refreshing dynamic
+  instructions, or microphone turns can stream audio without producing
+  transcripts/function calls.
 - xAI input and output are 24 kHz mono PCM. Changing the session format also
   requires changing capture/playback conversion in `lib/xai-realtime.ts`.
 - Map container sizing is inline-styled intentionally; map-library CSS order can

@@ -10,6 +10,7 @@
     "check": "npm run typecheck && npm run build"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.3",
     "framer-motion": "^11.11.0",
     "mapbox-gl": "^3.5.0",
     "maplibre-gl": "^5.0.0",
