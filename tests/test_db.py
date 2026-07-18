@@ -22,6 +22,17 @@ def test_add_and_get_gem(tmp_path):
     assert db.get_gem(conn, "kobe-kin-no-yu")["name"] == "Kin no Yu"
 
 
+def test_recommendation_summary_is_aggregate_and_contextual(tmp_path):
+    conn = db.connect(tmp_path / "bag.db")
+    gem = db.add_gem(conn, name="Kin no Yu", city="Kobe", pitch="Gold water at 8am.")
+    db.record_recommendation(conn, gem_id=gem["id"], city="kobe",
+                             context="Voice guide detail requested")
+    summary = db.recommendation_summary(conn, gem_id=gem["id"])
+    assert summary["total"] == 1
+    assert summary["by_gem"] == {gem["id"]: 1}
+    assert summary["events"][0]["context"] == "Voice guide detail requested"
+
+
 def test_get_gem_fuzzy_matches_voice_model_ids(tmp_path):
     conn = _conn(tmp_path)
     db.add_gem(conn, name="Motomachi Koukashita", city="kobe", pitch="Bars under tracks.")

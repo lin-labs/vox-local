@@ -132,6 +132,9 @@ def test_kb_reads_are_open_writes_are_gated(conn, store):
     out = q(svc, op="search_gems", city="kobe", query="quiet onsen")
     assert "kobe-kin-no-yu" in out
     assert "650 yen" in q(svc, op="get_gem", id="kin_no_yu")
+    served = db.recommendation_summary(conn, gem_id="kobe-kin-no-yu")
+    assert served["total"] == 1
+    assert served["events"][0]["context"] == "Voice guide detail requested"
     # remember works pre-account (the host's notebook — buffered, flushed later);
     # gem contributions still need a verified account
     assert "SILENT" in q(svc, op="remember", note="loves onsen")

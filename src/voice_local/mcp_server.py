@@ -295,7 +295,7 @@ def build_app(backend: VBBackend, *, conn, version: str, vb_phone_number: str = 
     `?key=` query param (for MCP clients that can only carry a URL)."""
     from mcp.server.fastmcp import FastMCP
     from mcp.server.transport_security import TransportSecuritySettings
-    from starlette.responses import JSONResponse, Response
+    from starlette.responses import HTMLResponse, JSONResponse, Response
 
     from voice_local import db as kbdb
 
@@ -359,6 +359,59 @@ def build_app(backend: VBBackend, *, conn, version: str, vb_phone_number: str = 
                                 status_code=400, headers=cors)
         log.info("gem added via extension: %s (%s)", gem["id"], gem.get("url") or "no url")
         return JSONResponse({"ok": True, "gem": gem}, headers=cors)
+
+    @mcp.custom_route("/creator", methods=["GET"])
+    async def creator_portal(request):  # noqa: ANN001
+        """The local, single-creator workspace. Authentication is intentionally
+        out of scope for this first localhost-oriented MVP."""
+        from importlib.resources import files
+
+        page = files("voice_local").joinpath("creator_portal.html").read_text()
+        return HTMLResponse(page)
+
+    @mcp.custom_route("/api/creator/dashboard", methods=["GET"])
+    async def creator_dashboard(request):  # noqa: ANN001
+        query = request.query_params.get("q", "")
+        city = request.query_params.get("city", "")
+        gems = kbdb.search_gems(conn, city=city, query=query, limit=100)
+        summary = kbdb.recommendation_summary(conn, limit=12)
+        for gem in gems:
+            gem["recommendations"] = summary["by_gem"].get(gem["id"], 0)
+        cities = [row[0] for row in conn.execute(
+            "SELECT DISTINCT city FROM gems WHERE city != '' ORDER BY city")]
+        return JSONResponse({
+            "gems": gems,
+            "stats": {"gems": conn.execute("SELECT count(*) FROM gems").fetchone()[0],
+                      "recommendations": summary["total"], "cities": len(cities)},
+            "cities": cities,
+            "recent_events": summary["events"],
+        })
+
+    @mcp.custom_route("/api/creator/gems", methods=["POST"])
+    async def creator_gems(request):  # noqa: ANN001
+        try:
+            body = json.loads(await request.body())
+            required = {key: str(body.get(key, "")).strip()
+                        for key in ("name", "city", "pitch")}
+            missing = [key for key, value in required.items() if not value]
+            if missing:
+                raise ValueError("missing " + ", ".join(missing))
+            gem = kbdb.add_gem(
+                conn, name=required["name"], city=required["city"],
+                pitch=required["pitch"], area=str(body.get("area", "")),
+                tags=str(body.get("tags", "")), price=str(body.get("price", "")),
+                booking=str(body.get("booking", "")), url=str(body.get("url", "")),
+                details=str(body.get("details", "")), source="curator")
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True, "gem": gem})
+
+    @mcp.custom_route("/api/creator/gems/{gem_id}/events", methods=["GET"])
+    async def creator_gem_events(request):  # noqa: ANN001
+        gem_id = request.path_params["gem_id"]
+        if kbdb.get_gem(conn, gem_id) is None:
+            return JSONResponse({"error": "gem not found"}, status_code=404)
+        return JSONResponse(kbdb.recommendation_summary(conn, gem_id=gem_id, limit=20))
 
     app = mcp.streamable_http_app()
     if not mcp_token:

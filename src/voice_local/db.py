@@ -31,6 +31,18 @@ CREATE TABLE IF NOT EXISTS gems (
     pitch   TEXT DEFAULT '',          -- the one-breath spoken sell
     details TEXT DEFAULT ''           -- longer notes (hours, budget, insider)
 );
+
+CREATE TABLE IF NOT EXISTS recommendation_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    gem_id      TEXT NOT NULL,
+    served_at   TEXT NOT NULL,
+    source      TEXT DEFAULT 'voice',
+    city        TEXT DEFAULT '',
+    context     TEXT DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS recommendation_events_gem_id_idx
+    ON recommendation_events (gem_id, served_at DESC);
 """
 
 
@@ -179,6 +191,39 @@ def get_gem(conn: sqlite3.Connection, gem_id: str) -> dict | None:
             "SELECT * FROM gems WHERE id LIKE ? OR replace(id,'-','_') = ? LIMIT 1",
             (f"%{norm}%", gem_id.lower())).fetchone()
     return gem_to_dict(row) if row else None
+
+
+def record_recommendation(conn: sqlite3.Connection, *, gem_id: str,
+                          source: str = "voice", city: str = "",
+                          context: str = "") -> None:
+    """Record that a gem was served without retaining caller identity or PII."""
+    conn.execute(
+        "INSERT INTO recommendation_events (gem_id, served_at, source, city, context) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (gem_id, _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+         source.strip()[:40], city.strip().lower()[:80], context.strip()[:240]),
+    )
+    conn.commit()
+
+
+def recommendation_summary(conn: sqlite3.Connection, *, gem_id: str = "",
+                           limit: int = 10) -> dict:
+    """Return aggregate counts and recent, non-PII served-context events."""
+    where = "WHERE gem_id = ?" if gem_id else ""
+    params: tuple[object, ...] = (gem_id,) if gem_id else ()
+    total = conn.execute(
+        f"SELECT count(*) FROM recommendation_events {where}", params).fetchone()[0]
+    by_gem = {
+        row["gem_id"]: row["count"]
+        for row in conn.execute(
+            "SELECT gem_id, count(*) AS count FROM recommendation_events "
+            f"{where} GROUP BY gem_id", params)
+    }
+    event_params: tuple[object, ...] = (*params, max(1, min(limit, 50)))
+    events = [dict(row) for row in conn.execute(
+        "SELECT gem_id, served_at, source, city, context FROM recommendation_events "
+        f"{where} ORDER BY served_at DESC LIMIT ?", event_params)]
+    return {"total": total, "by_gem": by_gem, "events": events}
 
 
 def add_gem(conn: sqlite3.Connection, *, name: str, city: str, pitch: str,

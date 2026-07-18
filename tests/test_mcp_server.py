@@ -156,6 +156,29 @@ def test_http_surface(tmp_path):
         assert got["count"] == 2
 
 
+def test_creator_portal_and_api(tmp_path):
+    from starlette.testclient import TestClient
+
+    conn = db.connect(tmp_path / "bag.db")
+    seed = db.add_gem(conn, name="Kin no Yu", city="kobe", pitch="Gold water.")
+    db.record_recommendation(conn, gem_id=seed["id"], city="kobe",
+                             context="Voice guide detail requested")
+    backend, _ = make_backend(None)
+    app = mcp_server.build_app(backend, conn=conn, version="test")
+    with TestClient(app) as client:
+        page = client.get("/creator")
+        assert page.status_code == 200 and "Field Notes" in page.text
+        dashboard = client.get("/api/creator/dashboard").json()
+        assert dashboard["stats"] == {"gems": 1, "recommendations": 1, "cities": 1}
+        assert dashboard["gems"][0]["recommendations"] == 1
+        created = client.post("/api/creator/gems", json={
+            "name": "Moon Bar", "city": "Kobe", "pitch": "A small nightcap.",
+            "tags": "bar,night",
+        })
+        assert created.status_code == 200 and created.json()["gem"]["source"] == "curator"
+        assert client.get(f"/api/creator/gems/{seed['id']}/events").json()["total"] == 1
+
+
 def test_mcp_token_gate(tmp_path):
     from starlette.testclient import TestClient
 

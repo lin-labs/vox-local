@@ -638,6 +638,13 @@ class CallServices:
     async def _kb_get(self, payload: dict) -> None:
         gem = kb.get_gem(self._conn, str(payload.get("id", "")))
         if gem is not None:
+            # The creator portal uses this aggregate to show where a guide entry
+            # is earning its keep. Keep it deliberately PII-free: no caller ID,
+            # transcript, or account metadata crosses into the curated data bag.
+            kb.record_recommendation(
+                self._conn, gem_id=gem["id"], source="voice",
+                city=gem.get("city", ""), context="Voice guide detail requested",
+            )
             await self._load_city_guide(gem.get("city", ""))
         await self._send("kb_result", {
             "ok": gem is not None, "data": gem,
