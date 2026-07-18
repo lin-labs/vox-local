@@ -375,9 +375,22 @@ class CallServices:
             await self._send("registration_result", {
                 "ok": False, "say_hint": "registration needs a name — ask for it."})
             return
+        lucky = str(payload.get("lucky", "")).strip().lower()
+        if not lucky:
+            # Deterministic gate: the prompt's ask-a-lucky-number step gets
+            # skipped under weak compliance — refuse until it happened (or the
+            # caller declined: lucky="skip"). The retry beat is also the natural
+            # moment to double-check the name's spelling.
+            await self._send("registration_result", {
+                "ok": False,
+                "say_hint": "before registering: confirm the SPELLING of their name "
+                            "letter by letter, and ask for their lucky single digit "
+                            "(their PIN will carry it) — then register again with "
+                            'name and lucky (use lucky:"skip" if they don\'t want one).'})
+            return
         pin = str(payload.get("pin", "")).strip()
         if not pin:
-            pin = _mint_pin(str(payload.get("lucky", "")).strip())
+            pin = _mint_pin("" if lucky in ("skip", "none") else lucky)
         # Promote the parked pending account when one exists: the caller keeps the
         # number their notes already live under; only NOW does the account become
         # real (PIN, file in accounts/, booking channel).

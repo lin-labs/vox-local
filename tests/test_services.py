@@ -170,7 +170,9 @@ def test_registration_mints_account_and_profile(conn, store, fake_puffo):
     svc = CallServices(conn=conn, store=store, puffo=(client, PuffoListener(client)),
                        caller_id="+15550001111", destination="", grok=None,
                        fulfiller_slug=FULFILLER, space_id="sp_test", send=send)
-    out = q(svc, op="register", name="Yuki Chen")
+    gated = q(svc, op="register", name="Yuki Chen")
+    assert "lucky" in gated and "SPELLING" in gated      # deterministic gate
+    out = q(svc, op="register", name="Yuki Chen", lucky="skip")
     assert "registered — welcome Yuki Chen" in out and "Today is" in out
     # the agent is told to CONFIRM the linked caller-ID with the caller
     assert "+15550001111" in out and "CONFIRM" in out
@@ -327,7 +329,7 @@ def test_notebook_notes_flush_into_profile_on_register(conn, store, fake_puffo):
     # notes BEFORE any account: buffered silently, never refused
     assert "SILENT" in q(svc, op="remember", note="wants Tokyo then Hakone in November")
     assert "SILENT" in q(svc, op="remember", note="two people, loves onsen")
-    q(svc, op="register", name="Mika Sato")
+    q(svc, op="register", name="Mika Sato", lucky="8")
     acct = next(a for a in store.load_all() if a.name == "Mika Sato")
     brief = store.profile_brief(acct.account_number)
     assert "Tokyo then Hakone" in brief and "loves onsen" in brief  # no re-asking
@@ -439,7 +441,7 @@ def test_register_promotes_pending_number_and_clears_parking(conn, store, tmp_pa
     svc, pending_store = _pending_services(conn, store, tmp_path)
     q(svc, op="remember", note="two people, mid-November")
     parked = pending_store.lookup_by_phone("+15550001111")
-    out = q(svc, op="register", name="Mika Tanaka")
+    out = q(svc, op="register", name="Mika Tanaka", lucky="skip")
     assert parked.account_number in out            # same number promoted
     assert store.get(parked.account_number) is not None
     assert pending_store.get(parked.account_number) is None
@@ -534,7 +536,7 @@ def test_channel_named_after_guest_with_personal_welcome(conn, store, fake_puffo
                        fulfiller_slug=FULFILLER, space_id="sp_test", send=send)
     q(svc, op="remember", note="trip: Hakone onsen, mid-November, two people")
     q(svc, op="remember", note="taste: quiet mornings, hates crowds")
-    q(svc, op="register", name="Mika Tanaka")
+    q(svc, op="register", name="Mika Tanaka", lucky="skip")
     acct = next(a for a in store.load_all() if a.name == "Mika Tanaka")
     calls = _sent(fake_puffo)
     create = next(c for c in calls if "channel" in c and "create" in c)
