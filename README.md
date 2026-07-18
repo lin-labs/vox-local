@@ -121,6 +121,9 @@ make deploy        # Amazon EC2: boyan@35.87.72.173, /home/boyan/Projects/vox-lo
 make deploy-labs   # legacy labs target: ~/Experiments/voice/vox-local, voice-local.service
 ```
 
+Both deploy targets run the release command directly over SSH after
+`git pull --ff-only`, so the remote host only needs `git`, `uv`, and systemd.
+
 ## The data bag is a git artifact
 
 New gems (CLI, extension, or callers) land in `data/gems.db` on the serving

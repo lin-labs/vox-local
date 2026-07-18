@@ -3,6 +3,7 @@
 SHELL := /bin/bash
 UNIT := voice-local.service
 NGROK_UNIT := voice-local-ngrok.service
+RELEASE_CMD := uv sync && uv run python -m pytest tests -q && systemctl --user restart
 DEPLOY_HOST ?= boyan@35.87.72.173
 DEPLOY_PATH ?= /home/boyan/Projects/vox-local
 DEPLOY_UNIT ?= vox-local.service
@@ -39,13 +40,13 @@ tail:
 	journalctl --user -u $(UNIT) -f
 
 release:
-	uv sync && uv run python -m pytest tests -q && systemctl --user restart $(UNIT)
+	$(RELEASE_CMD) $(UNIT)
 
 deploy deploy-amazon:
-	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && git pull --ff-only && make release UNIT=$(DEPLOY_UNIT)'
+	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && git pull --ff-only && $(RELEASE_CMD) $(DEPLOY_UNIT)'
 
 deploy-labs:
-	ssh $(LABS_DEPLOY_HOST) 'cd $(LABS_DEPLOY_PATH) && git pull --ff-only && make release UNIT=$(LABS_DEPLOY_UNIT)'
+	ssh $(LABS_DEPLOY_HOST) 'cd $(LABS_DEPLOY_PATH) && git pull --ff-only && $(RELEASE_CMD) $(LABS_DEPLOY_UNIT)'
 
 push-gems:
 	git add data/gems.db && git commit -m "gems: data bag update" && git push
