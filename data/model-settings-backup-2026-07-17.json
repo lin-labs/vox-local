@@ -1,0 +1,41 @@
+{
+  "llm": {
+    "model": "anthropic:claude-sonnet-4-5",
+    "use_fallbacks": "true"
+  },
+  "stt": {
+    "model": "assemblyai:universal-streaming",
+    "keyterms": "Kobe,Tokyo,Kyoto,Osaka,Hakone,Nara,Hiroshima,Kanazawa,Hokkaido,Okinawa,Arima,onsen,ryokan,shinkansen,izakaya,sake,teppanyaki,wagyu,kushikatsu,hidden gems,PIN,account number,booking,Boyan",
+    "language": "en",
+    "eot_threshold": 0.8,
+    "custom_language": "",
+    "language_source": "preset"
+  },
+  "tts": {
+    "model": "eleven_multilingual_v2",
+    "voice_id": "cgSgspJ2msm6clMCkdW9",
+    "voice_style": "none",
+    "custom_api_key": "",
+    "custom_voice_id": "",
+    "voice_id_source": "library"
+  },
+  "audio": {
+    "ambient_volume": 0.8,
+    "ambient_enabled": "false",
+    "thinking_volume": 0.8,
+    "thinking_enabled": "false"
+  },
+  "session": {
+    "continuous_mode": "false",
+    "max_history_messages": 100,
+    "continuous_mode_delay": 2.0,
+    "preemptive_generation": "false",
+    "max_call_duration_minutes": 30
+  },
+  "background": {
+    "model": "auto"
+  },
+  "post_processing": {
+    "model": "auto"
+  }
+}
