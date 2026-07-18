@@ -660,30 +660,45 @@ class CallServices:
                         "what they were looking for."})
 
     async def _kb_remember(self, payload: dict) -> None:
+        """Fire-and-forget note filing. Accepts one `note` or a `notes` batch
+        (strings, or {note, person} objects) so a fact-dense stretch costs the
+        voice ONE tool turn; the ACK is a single terse token the background AI
+        has nothing to elaborate on."""
+        items: list[tuple[str, str]] = []
+        default_person = str(payload.get("person", "")).strip()
+        raw = payload.get("notes")
+        if isinstance(raw, list):
+            for entry in raw:
+                if isinstance(entry, dict):
+                    items.append((str(entry.get("note", "")).strip(),
+                                  str(entry.get("person", "")).strip() or default_person))
+                else:
+                    items.append((str(entry).strip(), default_person))
         note = str(payload.get("note", "")).strip()
-        person = str(payload.get("person", "")).strip()
-        note_key = " ".join(note.lower().split())
-        if not note or note_key in self._seen_notes:
-            log.info("duplicate/empty remember note ignored")
-            return
-        self._seen_notes.add(note_key)
-        if self.gate.verified is None:
-            # No account yet: park the note under a pending account number so it
-            # survives a hangup; fall back to the in-call buffer without a
-            # pending store. Either way it lands on the profile at register/verify
-            # — never re-ask the caller.
-            pending = self._ensure_pending_account()
-            if pending is not None:
-                self._pending_store.append_note(pending.account_number, note,
-                                                person=person)
+        if note:
+            items.append((note, default_person))
+        for note, person in items:
+            note_key = " ".join(note.lower().split())
+            if not note or note_key in self._seen_notes:
+                log.info("duplicate/empty remember note ignored")
+                continue
+            self._seen_notes.add(note_key)
+            if self.gate.verified is None:
+                # No account yet: park the note under a pending account number so
+                # it survives a hangup; fall back to the in-call buffer without a
+                # pending store. Either way it lands on the profile at
+                # register/verify — never re-ask the caller.
+                pending = self._ensure_pending_account()
+                if pending is not None:
+                    self._pending_store.append_note(pending.account_number, note,
+                                                    person=person)
+                else:
+                    self._pending_notes.append(note)
             else:
-                self._pending_notes.append(note)
-        else:
-            self._store.append_note(self.gate.verified.account_number, note,
-                                    person=person)
+                self._store.append_note(self.gate.verified.account_number, note,
+                                        person=person)
         await self._send("kb_result", {
-            "ok": True, "data": None,
-            "say_hint": "SILENT: noted — say nothing about this; continue naturally."})
+            "ok": True, "data": None, "say_hint": "SILENT: noted."})
 
     async def _caller_name(self, payload: dict) -> None:
         """File the caller's name on their record the moment it is settled —

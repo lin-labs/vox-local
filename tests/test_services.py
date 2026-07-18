@@ -145,6 +145,21 @@ def test_kb_reads_are_open_writes_are_gated(conn, store):
     assert "off-book" in q(svc, op="search_gems", city="kobe", query="zzzz qqqq xxxx")
 
 
+def test_remember_batch_files_all_notes_in_one_query(conn, store):
+    svc = _services(conn, store)
+    q(svc, op="verify", pin="4242")
+    out = q(svc, op="remember", notes=[
+        "trip: Tokyo five nights then Kobe",
+        {"note": "taste: only eats vegetarian", "person": "Mark Kim"},
+        "trip: Tokyo five nights then Kobe",          # dupe inside the batch
+    ])
+    assert "SILENT" in out
+    notes = [n for _, n in store.read_notes("123456")]
+    assert notes.count("trip: Tokyo five nights then Kobe") == 1   # batch dupe dropped
+    assert "taste: only eats vegetarian" in notes
+    assert store.companions("123456") == ["mark kim"]
+
+
 def test_remember_dedupes_and_writes_notes(conn, store):
     svc = _services(conn, store)
     q(svc, op="verify", pin="4242")
