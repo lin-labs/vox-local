@@ -36,6 +36,10 @@
 - Never run `next build` while `next dev` is serving; both write `.next`.
 - Map tiles and the realtime WebSocket can prevent Playwright `networkidle`;
   wait for the rendered `main` element and user-visible assertions instead.
+- EC2 deploy verification must check both
+  `systemctl --user is-active vox-local.service` and `/healthz`. A stale
+  unmanaged `vox-up.sh` / `vox-local serve` process can keep port 7780 healthy
+  while systemd restart is failing with bind errno 98.
 
 ## Highest fidelity rung available
 

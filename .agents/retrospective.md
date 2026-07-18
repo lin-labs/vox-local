@@ -11,6 +11,7 @@
 - Port 3000 may already belong to another application. Identify the listening process before testing and use the next free port without stopping unrelated work.
 - Do not run a production build while the Meridian development server is using the same `.next` directory.
 - Preserve unrelated dirty files when syncing or rebasing; stage only the files owned by the current change.
+- For EC2 deploys, `/healthz` alone is insufficient. Check `systemctl --user is-active vox-local.service` too; a stale unmanaged launcher can own port 7780 while the unit is failing to restart.
 
 ## Completion checklist
 
