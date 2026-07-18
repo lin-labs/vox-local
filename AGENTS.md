@@ -19,6 +19,16 @@ This repo holds two datasets, both plain markdown with YAML-ish frontmatter:
    direction; if `make push-prompt` reports a diff you didn't make, pull the
    remote version down and reconcile before editing.
 
+0.5. **The VB⇄vox-local protocol doc stays current.** The call-flow contract
+   lives in the project vault at `~/agents/obsProjects/vox-local/flow.md`
+   (call lifecycle, caller-status contract, `query_backend` op grammar,
+   vox-local-vs-web-search split, latency budget, platform facts, ops units).
+   ANY change to `docs-agent-prompt.txt`, VB config (greeting, model settings,
+   capabilities), the op grammar, the attribution/caller-status behavior, or
+   the service/tunnel topology MUST update `flow.md` (including its changelog)
+   in the same working session. It is the examination surface Boyan uses to
+   debug calls — a stale flow.md is a bug.
+
 1. **Prefer the CLI for reads and small writes** — `bin/ckb` (stdlib python3,
    JSON out). It handles phone-number lookup, ranking, and timestamped notes:
    `ckb gems search`, `ckb gems get`, `ckb profile brief`, `ckb profile note`.
