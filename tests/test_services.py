@@ -337,6 +337,45 @@ def test_call_start_attribution_preloads_pending_notes_freely(conn, store, tmp_p
     assert "NO account yet" in brief and "never re-ask" in brief
 
 
+def test_call_start_attribution_flags_returning_caller_with_empty_notebook(conn, store, tmp_path):
+    """Called before, nothing noted: the status reply must say so, so Koyuki can
+    use the 'didn't get a chance to ask your name last time' opening."""
+    pending_store = AccountStore(tmp_path / "accounts-pending")
+    pending_store.save(Account(account_number="777001", pin="", name="",
+                               phones=["+15554445555"]))
+    sent: list[tuple[str, dict]] = []
+
+    async def send(action, payload):
+        sent.append((action, payload))
+
+    svc = CallServices(conn=conn, store=store, pending_store=pending_store,
+                       caller_id="+15554445555", destination="", grok=None,
+                       fulfiller_slug=FULFILLER, space_id="sp_test", send=send)
+    asyncio.run(svc.attribute())
+    (action, payload), = [x for x in sent if x[0] == "caller_context"]
+    assert "HAS called before" in payload["brief"]
+    assert "didn't get a chance to ask" in payload["brief"]
+
+
+def test_call_start_attribution_flags_first_time_caller(conn, store, tmp_path):
+    """Unknown number: a pending profile is parked within the first seconds AND
+    the status reply says first-time so Koyuki asks the name plainly."""
+    pending_store = AccountStore(tmp_path / "accounts-pending")
+    sent: list[tuple[str, dict]] = []
+
+    async def send(action, payload):
+        sent.append((action, payload))
+
+    svc = CallServices(conn=conn, store=store, pending_store=pending_store,
+                       caller_id="+15556667777", destination="", grok=None,
+                       fulfiller_slug=FULFILLER, space_id="sp_test", send=send)
+    assert pending_store.lookup_by_phone("+15556667777") is not None  # parked already
+    asyncio.run(svc.attribute())
+    (action, payload), = [x for x in sent if x[0] == "caller_context"]
+    assert "First-time caller" in payload["brief"]
+    assert "pleasure to speak with" in payload["brief"]
+
+
 def test_pre_account_note_parks_a_pending_account(conn, store, tmp_path):
     svc, pending_store = _pending_services(conn, store, tmp_path)
     q(svc, op="remember", note="loves quiet onsen mornings")

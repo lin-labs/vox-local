@@ -116,6 +116,8 @@ class CallServices:
         self._pending_store = pending_store
         self._pending_notes: list[str] = []
         self._pending_context_sent = False
+        self._pending_created_now = False   # parked THIS call = first-time caller
+        self._no_id_notified = False
         self._cities_loaded: set[str] = set()
         matched = store.lookup_by_phone(caller_id) if caller_id else None
         self._pending_account = (pending_store.lookup_by_phone(caller_id)
@@ -170,7 +172,9 @@ class CallServices:
         # bookings still require the PIN. No match = no dossier, and that is fine
         # — never rush toward creating an account.
         if not self._pending_context_sent and self.gate.verified is None:
-            preload = ""
+            # The first reply of every call carries an explicit caller status —
+            # known guest / called before / first time — so the agent's opening
+            # name move is driven by the system, never guessed.
             if self.gate.matched is not None:
                 brief = self._store.profile_brief(self.gate.matched.account_number)
                 if not brief:
@@ -185,18 +189,42 @@ class CallServices:
                     "before bookings, account details, or PIN changes; if the "
                     "voice clearly is not them, fall back to neutral hosting:\n"
                     + brief)
-            elif self._pending_account is not None:
+            elif self._pending_account is not None and not self._pending_created_now:
                 brief = self._pending_store.profile_brief(
                     self._pending_account.account_number)
                 if brief:
                     preload = (
                         "Returning caller with NO account yet — your notebook from "
                         "earlier calls (never re-ask these; bookings still require "
-                        "creating the account, but never rush that):\n" + brief)
-            if preload:
-                self._pending_context_sent = True
-                await self._send("caller_context",
-                                 {"brief": preload, "trip_summary": ""})
+                        "creating the account, but never rush that). If the notebook "
+                        "does not name them, say you didn't get a chance to ask their "
+                        "name last time and ask it now:\n" + brief)
+                else:
+                    preload = (
+                        "Returning caller with NO account yet and an EMPTY notebook — "
+                        "this number HAS called before, but you never learned their "
+                        "name. Tell them you didn't get a chance to ask last time, "
+                        "and ask their name now.")
+            elif self._pending_account is not None:
+                preload = (
+                    "First-time caller — this number has never called before; a fresh "
+                    "notebook is already parked for them, so everything you note "
+                    "sticks even if the call drops. Ask warmly who you have the "
+                    "pleasure to speak with.")
+            else:
+                # No phone yet — one that arrives later (agent-passed) must still
+                # get the real status, so don't burn _pending_context_sent here.
+                if not self._no_id_notified:
+                    self._no_id_notified = True
+                    await self._send("caller_context", {
+                        "brief": "No caller ID on this call yet — you don't know "
+                                 "who this is. Ask warmly who you have the pleasure "
+                                 "to speak with.",
+                        "trip_summary": ""})
+                return
+            self._pending_context_sent = True
+            await self._send("caller_context",
+                             {"brief": preload, "trip_summary": ""})
 
     def attribution_phone(self, query: str) -> str:
         """Pull caller_phone out of a raw query string (for ops handled a layer
@@ -656,6 +684,7 @@ class CallServices:
                 account_number=number, pin="", name="",
                 phones=[self._caller_id] if self._caller_id else [])
             self._pending_store.save(self._pending_account)
+            self._pending_created_now = True
             log.info("pending account %s parked (notes persist pre-registration)", number)
         return self._pending_account
 
