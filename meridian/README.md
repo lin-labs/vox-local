@@ -20,7 +20,10 @@ npm run dev                 # http://localhost:3000
 ```
 
 From the repository root, the equivalent shortcuts are `make meridian-setup`,
-`make meridian-dev`, and `make meridian-check`.
+`make meridian-dev`, and `make meridian-check`. The root `make meridian-dev`
+target sources `~/.zshrc` before starting Next, so Boyan's local
+`XAI_API_KEY` export is used directly without copying the secret into
+`.env.local`.
 
 | Environment variable | Required? | Purpose |
 |---|---|---|

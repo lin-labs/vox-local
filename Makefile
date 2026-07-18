@@ -59,7 +59,7 @@ meridian-setup:
 	npm --prefix meridian ci
 
 meridian-dev:
-	npm --prefix meridian run dev
+	zsh -c 'source "$$HOME/.zshrc" >/dev/null 2>&1; exec npm --prefix meridian run dev'
 
 meridian-check:
 	npm --prefix meridian run check

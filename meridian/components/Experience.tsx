@@ -1,17 +1,15 @@
 "use client";
 
 import { useEffect } from "react";
-import dynamic from "next/dynamic";
 import { useApp } from "@/lib/store";
 import { begin, interrupt, toggleOrb } from "@/lib/orchestrator";
+import Globe from "@/components/Globe";
 import TopBar from "@/components/TopBar";
 import ItineraryPanel from "@/components/ItineraryPanel";
 import BottomStage from "@/components/BottomStage";
 import IntroOverlay from "@/components/IntroOverlay";
 import Badges from "@/components/Badges";
 import AgentFeed from "@/components/AgentFeed";
-
-const Globe = dynamic(() => import("@/components/Globe"), { ssr: false });
 
 export default function Experience() {
   // Keyboard: space = talk, "/" = type, esc = interrupt.

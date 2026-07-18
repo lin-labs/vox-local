@@ -26,8 +26,9 @@
 ## Dev environment
 
 - Meridian requires Node 20+ and `npm --prefix meridian ci`.
-- Live voice requires server-side `XAI_API_KEY`; the MapLibre fallback needs no
-  map key.
+- Live voice requires server-side `XAI_API_KEY`; locally `make meridian-dev`
+  sources `~/.zshrc` so Boyan's exported key is used directly. The MapLibre
+  fallback needs no map key.
 - If port 3000 is occupied, run `npm --prefix meridian run dev -- -p 3010` and
   use that origin for browser microphone permissions.
 

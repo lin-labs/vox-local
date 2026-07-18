@@ -90,7 +90,7 @@ Python service:
 
 ```bash
 make meridian-setup
-make meridian-dev       # http://localhost:3000
+make meridian-dev       # http://localhost:3000, loads XAI_API_KEY from ~/.zshrc
 make meridian-check     # type-check + production build
 ```
 
