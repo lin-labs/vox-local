@@ -215,6 +215,27 @@ def test_booking_flow_short_thread_and_date_bump(conn, store, fake_puffo):
     assert itinerary[itinerary.index("send") + 1].startswith("[booking-itinerary]")
 
 
+def test_attribute_ignores_hallucinated_placeholder_phone(conn, store, tmp_path):
+    """The foreground invents caller_phone values (+1234567890 observed live) —
+    a placeholder must not match, park, or become an identity."""
+    pending_store = AccountStore(tmp_path / "accounts-pending")
+    sent: list[tuple[str, dict]] = []
+
+    async def send(action, payload):
+        sent.append((action, payload))
+
+    svc = CallServices(conn=conn, store=store, pending_store=pending_store,
+                       caller_id="", destination="", grok=None,
+                       fulfiller_slug=FULFILLER, space_id="sp_test", send=send)
+    for fake in ("+1234567890", "+1", "1234567890", "+10000000000"):
+        asyncio.run(svc.attribute(fake))
+    assert svc._caller_id == ""
+    assert pending_store.lookup_by_phone("+1234567890") is None
+    # the no-caller-ID status is what the agent should hear
+    briefs = [p["brief"] for a, p in sent if a == "caller_context"]
+    assert briefs and "No caller ID" in briefs[0]
+
+
 def test_caller_name_sets_pending_account_name(conn, store, tmp_path):
     """The name settles at the start of the call — caller_name must land it on
     the pending record so the NEXT call greets them by name (voice-local ask

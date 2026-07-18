@@ -148,6 +148,11 @@ class CallServices:
         silent caller context — greet by name, use the history; PIN still
         gates bookings. Runs on every query (including the check_updates ping)
         and is cheap once attribution is settled."""
+        digits = re.sub(r"\D", "", agent_phone or "")
+        if len(digits) < 10 or digits.lstrip("1") in ("234567890", "0" * 10, "5551234567"):
+            # Foreground models INVENT placeholder numbers (+1234567890 observed
+            # live 2026-07-17) — a fake number must never become an identity.
+            agent_phone = ""
         if agent_phone and self.gate.verified is None and self.gate.matched is None:
             matched = self._store.lookup_by_phone(agent_phone)
             if matched is not None:
