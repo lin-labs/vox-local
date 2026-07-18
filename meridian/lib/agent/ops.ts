@@ -1,6 +1,5 @@
-/* Isomorphic op-applier — the single source of truth for itinerary mutations.
-   Runs on the server inside the agent loop AND on the client for live SSE
-   application, so both sides converge on identical state. */
+/* Deterministic op-applier — the single source of truth for itinerary
+   mutations invoked by xAI's client-side custom function calls. */
 
 import type { Itinerary, ItineraryOp } from "@/lib/types";
 

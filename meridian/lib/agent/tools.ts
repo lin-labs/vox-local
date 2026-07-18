@@ -38,10 +38,11 @@ const item = {
 };
 
 export const EDIT_ITINERARY_TOOL = {
+  type: "function" as const,
   name: "edit_itinerary",
   description:
-    "Apply structured edits to the traveler's itinerary. Batch every op for the turn into ONE call — each op animates live in the interface the moment it is written, so compose trips as a SEQUENCE of granular ops (set_meta, then add_day + its add_items per day), never as one replace_trip blob. Required fields per op: set_meta{title?,subtitle?} · add_day{location,center,position?} · remove_day{day} · set_day{day,…} · add_item{day,item,position?} · update_item{id,patch} · remove_item{id} · move_item{id,toDay,position?} · replace_trip{itinerary:null} (clear/restart only). Positions are 1-based; days renumber automatically after structural changes.",
-  input_schema: {
+    "Apply structured edits to the traveler's itinerary. Batch every op for the turn into ONE call and compose trips as a sequence of granular ops (set_meta, then add_day + its add_items per day), never as one replace_trip blob. Required fields per op: set_meta{title?,subtitle?} · add_day{location,center,position?} · remove_day{day} · set_day{day,…} · add_item{day,item,position?} · update_item{id,patch} · remove_item{id} · move_item{id,toDay,position?} · replace_trip{itinerary:null} (clear/restart only). Positions are 1-based; days renumber automatically after structural changes.",
+  parameters: {
     type: "object" as const,
     required: ["ops"],
     properties: {
@@ -100,10 +101,11 @@ export const EDIT_ITINERARY_TOOL = {
 };
 
 export const SET_CAMERA_TOOL = {
+  type: "function" as const,
   name: "set_camera",
   description:
     "Fly the 3D map camera. Use whenever the geographic focus of the conversation shifts.",
-  input_schema: {
+  parameters: {
     type: "object" as const,
     required: ["center", "zoom"],
     properties: {
@@ -115,21 +117,18 @@ export const SET_CAMERA_TOOL = {
   },
 };
 
-export const FINALIZE_TOOL = {
-  name: "finalize_turn",
+export const SET_SUGGESTIONS_TOOL = {
+  type: "function" as const,
+  name: "set_suggestions",
   description:
-    "REQUIRED final call of every turn. Delivers your spoken reply and suggestion chips, then ends the turn.",
-  input_schema: {
+    "Set two to four short, tappable suggestions for what the traveler might ask next.",
+  parameters: {
     type: "object" as const,
-    required: ["reply"],
+    required: ["chips"],
     properties: {
-      reply: {
-        type: "string",
-        description:
-          "Spoken aloud via TTS. HARD LIMIT 55 words — count them; shorter is better. No markdown, emoji, or lists. At most one question.",
-      },
       chips: {
         type: "array",
+        minItems: 2,
         items: { type: "string" },
         maxItems: 4,
         description: "2–4 tappable next moves, ≤5 words each",
@@ -139,7 +138,12 @@ export const FINALIZE_TOOL = {
 };
 
 export const WEB_SEARCH_TOOL = {
-  type: "web_search_20250305",
-  name: "web_search",
-  max_uses: 3,
+  type: "web_search" as const,
 };
+
+export const XAI_VOICE_TOOLS = [
+  WEB_SEARCH_TOOL,
+  EDIT_ITINERARY_TOOL,
+  SET_CAMERA_TOOL,
+  SET_SUGGESTIONS_TOOL,
+];

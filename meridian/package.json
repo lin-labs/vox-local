@@ -5,10 +5,11 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run build"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.112.3",
     "framer-motion": "^11.11.0",
     "mapbox-gl": "^3.5.0",
     "maplibre-gl": "^5.0.0",

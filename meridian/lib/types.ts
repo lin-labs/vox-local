@@ -66,7 +66,7 @@ export type ItineraryOp =
 /** A live tool-call entry for the on-screen agent activity feed. */
 export type FeedItem = {
   id: string;
-  name: "web_search" | "edit_itinerary" | "set_camera" | "finalize";
+  name: "web_search" | "edit_itinerary" | "set_camera" | "set_suggestions";
   label: string;
   state: "start" | "done";
 };
@@ -79,7 +79,7 @@ export type TurnEvent =
   | { type: "camera"; move: CameraMove }
   | { type: "chips"; chips: string[] }
   | { type: "reply"; text: string }
-  | { type: "done"; itinerary: Itinerary | null; source: "claude" | "mock" }
+  | { type: "done"; itinerary: Itinerary | null; source: "xai" | "mock" }
   | { type: "error"; message: string };
 
 export type CameraCmd = { nonce: number } & (

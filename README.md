@@ -82,6 +82,22 @@ uv run vox-local gems list --city kobe
 uv run python -m pytest tests -q
 ```
 
+## Meridian web app
+
+The cinematic xAI voice concierge contributed by Vincent lives as an ordinary
+app under [`meridian/`](meridian/). It does not share dependencies with the
+Python service:
+
+```bash
+make meridian-setup
+make meridian-dev       # http://localhost:3000
+make meridian-check     # type-check + production build
+```
+
+New web work branches from `origin/meridian-dev` (or `origin/main`) and edits
+the folder directly. The old unrelated `origin/meridian` branch is retained
+only as the provenance of the initial subtree import.
+
 Config via env (`~/.env` then `./.env`): `VOICE_LOCAL_PORT`, `VOICE_LOCAL_DB`,
 `VOICE_LOCAL_STATE`, `VOICE_LOCAL_GEMS_TOKEN`, `VOICE_LOCAL_DESTINATION`,
 `VOCAL_BRIDGE_API`, `VB_AGENT_ID`, `VB_PHONE_NUMBER`, `VB_PUBLIC_URL`,

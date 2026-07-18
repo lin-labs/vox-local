@@ -294,7 +294,7 @@ export function mockTurn(
       {
         type: "reply",
         text:
-          "I must be honest — live changes and research need my full brain, and the studio hasn't connected it. Add an Anthropic key and restart, or name a new destination and I'll chart that instead.",
+          "I must be honest — live changes and research need my full brain, and the studio hasn't connected it. Add an xAI key and restart, or name a new destination and I'll chart that instead.",
       },
       { type: "chips", chips: ["Surprise me", "Marrakech & the desert", "Chase the northern lights"] },
       { type: "done", itinerary, source: "mock" },
