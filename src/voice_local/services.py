@@ -210,14 +210,16 @@ class CallServices:
                     preload = (
                         "Returning caller with NO account yet and an EMPTY notebook — "
                         "this number HAS called before, but you never learned their "
-                        "name. Tell them you didn't get a chance to ask last time, "
-                        "and ask their name now.")
+                        "name. IN YOUR VERY NEXT SPOKEN TURN, tell them you didn't "
+                        "get a chance to ask last time and ask their name — do not "
+                        "postpone it.")
             elif self._pending_account is not None:
                 preload = (
                     "First-time caller — this number has never called before; a fresh "
                     "notebook is already parked for them, so everything you note "
-                    "sticks even if the call drops. Ask warmly who you have the "
-                    "pleasure to speak with.")
+                    "sticks even if the call drops. IN YOUR VERY NEXT SPOKEN TURN, "
+                    "before anything else, warmly ask who you have the pleasure to "
+                    "speak with — do not postpone the name.")
             else:
                 # No phone yet — one that arrives later (agent-passed) must still
                 # get the real status, so don't burn _pending_context_sent here.
