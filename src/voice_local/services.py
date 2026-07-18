@@ -149,9 +149,11 @@ class CallServices:
         gates bookings. Runs on every query (including the check_updates ping)
         and is cheap once attribution is settled."""
         digits = re.sub(r"\D", "", agent_phone or "")
-        if len(digits) < 10 or digits.lstrip("1") in ("234567890", "0" * 10, "5551234567"):
-            # Foreground models INVENT placeholder numbers (+1234567890 observed
-            # live 2026-07-17) — a fake number must never become an identity.
+        bare = digits[1:] if digits.startswith("1") and len(digits) == 11 else digits
+        if len(bare) < 10 or bare in ("1234567890", "0" * 10) or bare[3:6] == "555":
+            # Foreground models INVENT placeholder numbers (+1234567890 and the
+            # 555 example +16505551234 observed live 2026-07-17) — a fake number
+            # must never match, park, or become an identity.
             agent_phone = ""
         if agent_phone and self.gate.verified is None and self.gate.matched is None:
             matched = self._store.lookup_by_phone(agent_phone)

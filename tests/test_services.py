@@ -227,7 +227,7 @@ def test_attribute_ignores_hallucinated_placeholder_phone(conn, store, tmp_path)
     svc = CallServices(conn=conn, store=store, pending_store=pending_store,
                        caller_id="", destination="", grok=None,
                        fulfiller_slug=FULFILLER, space_id="sp_test", send=send)
-    for fake in ("+1234567890", "+1", "1234567890", "+10000000000"):
+    for fake in ("+1234567890", "+1", "1234567890", "+10000000000", "+16505551234"):
         asyncio.run(svc.attribute(fake))
     assert svc._caller_id == ""
     assert pending_store.lookup_by_phone("+1234567890") is None
