@@ -1,6 +1,6 @@
 # Bulk outbound-call relay API
 
-`POST /api/outbound/calls` is an operator-only API for starting a small, consented batch of outbound calls through Vocal Bridge. It creates one Puffo thread per recipient, asks Koyuki to use the supplied long-form brief as the call objective, and appends completed transcription turns to the corresponding thread.
+`POST /api/outbound/calls` is an operator-only API for starting a small, consented batch of outbound calls through Vocal Bridge. It creates one Puffo thread per recipient, asks the configured outbound agent (Miyuki, the outbound prober — `VB_OUTBOUND_AGENT_ID`; falls back to `VB_AGENT_ID`) to use the supplied long-form brief as the call objective, and appends completed transcription turns to the corresponding thread.
 
 This endpoint initiates real phone calls. Do not expose it to an untrusted browser or invoke it for a recipient who has not consented to be called.
 
@@ -25,8 +25,8 @@ The token file is mode `0600`, is not committed, and must never be logged or sen
 ```json
 {
   "phone_numbers": ["+16505550123", "+16505550124"],
-  "description": "A full operator brief describing who to call, the purpose of the conversation, their preferences, relevant background, success criteria, and any details Koyuki should know.",
-  "agent_fit": "Use Koyuki's calm, thoughtful local-guide voice. Lead with the reason for calling and listen before offering options.",
+  "description": "A full operator brief describing who to call, the purpose of the conversation, their preferences, relevant background, success criteria, and any details the calling agent should know.",
+  "agent_fit": "Use Miyuki's brief, courteous evaluator voice. Probe and ask questions; do not answer them.",
   "dos": [
     "Confirm whether now is a good time to talk.",
     "Offer to follow up in the Puffo channel when useful."
@@ -42,7 +42,7 @@ The token file is mode `0600`, is not committed, and must never be logged or sen
 | Field | Required | Rules |
 | --- | --- | --- |
 | `phone_numbers` | Yes | One to five unique E.164 phone numbers, including `+`. |
-| `description` | Yes* | A 10–12,000-character, batch-level operator brief. It should be complete enough for Koyuki to understand the caller's intent and desired outcome. |
+| `description` | Yes* | A 10–12,000-character, batch-level operator brief. It should be complete enough for the calling agent to understand the caller's intent and desired outcome. |
 | `agent_fit` | No | Up to 2,000 characters describing the preferred agent style or role. |
 | `dos` | No | Up to 20 non-empty instructions, each at most 500 characters. |
 | `donts` | No | Up to 20 non-empty constraints, each at most 500 characters. |
@@ -88,17 +88,18 @@ An individual provider dial failure is reported in that recipient's Puffo thread
 1. vox-local validates the consented batch and builds the shared detailed brief.
 2. It creates one root message in `VOICE_LOCAL_OUTBOUND_CHANNEL_ID` for each recipient, containing the brief, a masked recipient label, and a run identifier.
 3. It starts the Vocal Bridge calls concurrently.
-4. The returned Vocal Bridge room name is associated with the recipient's Puffo thread and with Koyuki's per-call backend context.
-5. When Koyuki first checks for backend updates, she receives an `[Outbound call goal]` payload containing the detailed brief. Her live prompt instructs her to use it naturally and never imply that the recipient initiated the call.
+4. The returned Vocal Bridge room name is associated with the recipient's Puffo thread and with the calling agent's per-call backend context.
+5. When the calling agent first checks for backend updates, it receives an `[Outbound call goal]` payload containing the detailed brief. Its live prompt instructs it to use it naturally and never imply that the recipient initiated the call.
 6. A background relay polls Vocal Bridge's debug events. Completed `user_transcription` events are posted as `[User] …`; completed `agent_response` events are posted as `[Agent] …`. Status changes appear as `[System] …`.
 
-The debug-event poller deduplicates events and polls roughly every 0.75 seconds while active calls remain. This is a visibility relay, not a second conversation system: Vocal Bridge remains responsible for call audio and Koyuki's live dialogue.
+The debug-event poller deduplicates events and polls roughly every 0.75 seconds while active calls remain. This is a visibility relay, not a second conversation system: Vocal Bridge remains responsible for call audio and the calling agent's live dialogue.
 
 ## Operator setup
 
 The serving process must have all of the following before the route is usable:
 
 - `VOCAL_BRIDGE_API` and `VB_AGENT_ID` for the configured Koyuki agent, with Vocal Bridge outbound calling enabled and its Debug Mode API available.
+- `VB_OUTBOUND_AGENT_ID` (optional) selects a dedicated outbound agent for these calls — currently Miyuki, the outbound prober whose prompt lives in `docs-miyuki-agent-prompt.txt` (`make push-miyuki-prompt`). Debug Mode must be enabled on that agent for transcript relay. `VB_EXTRA_AGENT_IDS` lists any additional agents sharing the MCP backend so their sessions resolve for goal delivery and caller attribution.
 - A working Puffo configuration (`PUFFO_*`) and `VOICE_LOCAL_OUTBOUND_CHANNEL_ID`, set to the private channel where the per-call threads should appear.
 - The dedicated token described above, either generated in the private state directory or injected as `VOICE_LOCAL_OUTBOUND_TOKEN`.
 
@@ -129,5 +130,5 @@ curl --fail-with-body \
 - `src/voice_local/mcp_server.py` authenticates and exposes the HTTP route.
 - `src/voice_local/outbound.py` validates requests, creates Puffo threads, starts calls, and relays transcript/status events.
 - `src/voice_local/cli.py` assembles the configured relay and creates the private token when needed.
-- `docs-agent-prompt.txt` defines Koyuki's outbound-call behavior. Prompt changes must be synchronized to Vocal Bridge with `make push-prompt`.
+- `docs-miyuki-agent-prompt.txt` defines the outbound prober's behavior (`make push-miyuki-prompt`); `docs-agent-prompt.txt` keeps Koyuki's fallback outbound behavior (`make push-prompt`). Prompt changes must be synchronized to Vocal Bridge in the same change.
 - `~/agents/obsProjects/vox-local/flow.md` is the operational call-flow contract and changelog for the Vocal Bridge-to-vox-local integration.
