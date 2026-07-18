@@ -35,8 +35,16 @@
 ## Known quirks
 
 - Never run `next build` while `next dev` is serving; both write `.next`.
+- xAI `session.update` is replacement-like for voice-critical fields: if a
+  runtime update omits `turn_detection`, `audio.input.transcription`, audio
+  formats, or tools, live microphone turns can remain stuck in `LISTENING` while
+  audio frames stream forever. Preserve the full session contract on every
+  update.
 - Map tiles and the realtime WebSocket can prevent Playwright `networkidle`;
   wait for the rendered `main` element and user-visible assertions instead.
+- Chrome fake microphone files can be attenuated by headless capture/DSP. For
+  provider-level VAD checks, stream raw 24 kHz PCM to xAI and confirm
+  `speech_started`, transcription, and function-call events.
 - EC2 deploy verification must check both
   `systemctl --user is-active vox-local.service` and `/healthz`. A stale
   unmanaged `vox-up.sh` / `vox-local serve` process can keep port 7780 healthy

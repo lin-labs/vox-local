@@ -126,6 +126,7 @@ export class XaiRealtimeVoice {
   private socket: WebSocket | null = null;
   private player: PcmPlayer;
   private muted = false;
+  private voice: string | null = null;
   private microphone: MediaStream | null = null;
   private micContext: AudioContext | null = null;
   private micSource: MediaStreamAudioSourceNode | null = null;
@@ -153,6 +154,7 @@ export class XaiRealtimeVoice {
     if (!tokenResponse.ok || !token.value || !token.model || !token.voice) {
       throw new Error(token.error || `Voice authentication failed (${tokenResponse.status})`);
     }
+    this.voice = token.voice;
 
     const url = new URL("wss://api.x.ai/v1/realtime");
     url.searchParams.set("model", token.model);
@@ -174,7 +176,7 @@ export class XaiRealtimeVoice {
       socket.addEventListener("open", () => {
         this.send({
           type: "session.update",
-          session: { ...session, voice: token.voice },
+          session: this.withVoice(session),
         });
       });
 
@@ -232,7 +234,11 @@ export class XaiRealtimeVoice {
   }
 
   updateSession(session: SessionConfig) {
-    this.send({ type: "session.update", session });
+    this.send({ type: "session.update", session: this.withVoice(session) });
+  }
+
+  private withVoice(session: SessionConfig): SessionConfig {
+    return this.voice ? { ...session, voice: this.voice } : session;
   }
 
   sendText(text: string) {

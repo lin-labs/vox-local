@@ -27,6 +27,12 @@ export default function Globe() {
       handleRef.current = h;
       h.startIdleSpin();
       useApp.setState({ mapReady: true, mapFlavor: h.flavor });
+    }).catch((error) => {
+      if (dead) return;
+      clearTimeout(failsafe);
+      console.warn("[map] failed to initialize", error);
+      ((window as any).__mapErrs ??= []).push(String(error));
+      setVisible(true);
     });
     return () => {
       dead = true;
