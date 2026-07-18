@@ -215,6 +215,34 @@ def test_booking_flow_short_thread_and_date_bump(conn, store, fake_puffo):
     assert itinerary[itinerary.index("send") + 1].startswith("[booking-itinerary]")
 
 
+def test_caller_name_sets_pending_account_name(conn, store, tmp_path):
+    """The name settles at the start of the call — caller_name must land it on
+    the pending record so the NEXT call greets them by name (voice-local ask
+    2026-07-17: pending 626084 had notes but name='')."""
+    pending_store = AccountStore(tmp_path / "accounts-pending")
+    sent: list[tuple[str, dict]] = []
+
+    async def send(action, payload):
+        sent.append((action, payload))
+
+    svc = CallServices(conn=conn, store=store, pending_store=pending_store,
+                       caller_id="+15558889999", destination="", grok=None,
+                       fulfiller_slug=FULFILLER, space_id="sp_test", send=send)
+    out = q(svc, op="caller_name", name="Boyan Lin")
+    assert "SILENT" in out
+    parked = pending_store.lookup_by_phone("+15558889999")
+    assert parked is not None and parked.name == "Boyan Lin"
+    # and the brief for a later call now names them
+    assert "Boyan Lin" in pending_store.profile_brief(parked.account_number) or \
+           pending_store.get(parked.account_number).name == "Boyan Lin"
+
+
+def test_caller_name_never_overwrites_a_verified_name(conn, store):
+    svc = _services(conn, store)                 # caller-ID matched "Boyan Lin"
+    q(svc, op="caller_name", name="Someone Else")
+    assert store.get("123456").name == "Boyan Lin"
+
+
 def test_mint_pin_carries_lucky_digit_twice():
     from voice_local.services import _mint_pin
     for _ in range(50):

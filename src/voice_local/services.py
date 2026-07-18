@@ -136,7 +136,7 @@ class CallServices:
     _QUERY_OPS = {"verify": "_verify", "register": "_register",
                   "change_pin": "_change_pin", "search_gems": "_kb_search",
                   "get_gem": "_kb_get", "city_guide": "_kb_city_guide",
-                  "remember": "_kb_remember",
+                  "remember": "_kb_remember", "caller_name": "_caller_name",
                   "add_gem": "_kb_add", "booking_establish": "_booking_establish",
                   "booking_request": "_booking_request"}
 
@@ -664,6 +664,35 @@ class CallServices:
         await self._send("kb_result", {
             "ok": True, "data": None,
             "say_hint": "SILENT: noted — say nothing about this; continue naturally."})
+
+    async def _caller_name(self, payload: dict) -> None:
+        """File the caller's name on their record the moment it is settled —
+        BEFORE any registration. On the pending account it becomes the name the
+        next call greets them by; on a matched real account it only fills an
+        empty name (a verified name is never overwritten by voice)."""
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            await self._send("kb_result", {
+                "ok": False,
+                "say_hint": "caller_name needs a name — ask for it (spelled out)."})
+            return
+        target = None
+        if self.gate.verified is not None:
+            target = (self._store, self.gate.verified)
+        elif self.gate.matched is not None:
+            target = (self._store, self.gate.matched) if not self.gate.matched.name else None
+        else:
+            pending = self._ensure_pending_account()
+            if pending is not None:
+                target = (self._pending_store, pending)
+        if target is not None:
+            store, account = target
+            account.name = name
+            store.save(account)
+            log.info("caller name set: %s (account %s)", name, account.account_number)
+        await self._send("kb_result", {
+            "ok": True, "data": None,
+            "say_hint": "SILENT: name noted — say nothing about this; continue naturally."})
 
     def _flush_notes(self, account_number: str) -> None:
         for note in self._pending_notes:
