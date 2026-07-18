@@ -39,6 +39,11 @@ RESOLVE_CACHE_S = 2.0
 RESOLVE_RETRIES = 5
 RESOLVE_RETRY_DELAY_S = 0.8
 
+# Side-effect ops: accepted into the in-memory intake queue with an instant
+# ack; a persistent worker drains them in order. Reads and auth-gated ops stay
+# synchronous — their result IS the reply.
+WRITE_OPS = {"remember", "caller_name"}
+
 
 class _CallState:
     """One live phone call: its CallServices plus the pending out-of-band
@@ -63,6 +68,9 @@ class VBBackend:
         self._resolve_cache: tuple[float, str, str] | None = None
         self._refresh_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        self._write_queue: asyncio.Queue[tuple[_CallState, str]] = asyncio.Queue()
+        self._worker_task: asyncio.Task | None = None
+        self._last_closed: tuple[str, str] | None = None   # (sid, caller_phone)
 
     @property
     def live_calls(self) -> int:
@@ -163,10 +171,24 @@ class VBBackend:
     # ---- the tool -------------------------------------------------------------
 
     async def query(self, query: str) -> str:
+        op = _op_of(query)
+        if op == "post_call_notes":
+            return await self._post_call(query)
+        if op in WRITE_OPS:
+            # Intake lane: write ops are accepted instantly into the in-memory
+            # queue and processed in arrival order by the worker — VB can fire
+            # many requests without ever waiting on doc updates; the dossier
+            # keeps updating off to the side as items drain.
+            async with self._lock:
+                await self._reap()
+                state = await self._resolve_call()
+                drained = self._drain(state)
+            self._ensure_worker()
+            self._write_queue.put_nowait((state, query))
+            return "\n".join(filter(None, ["SILENT: noted.", drained]))
         async with self._lock:   # one call at a time; keeps store/puffo writes serial
             await self._reap()
             state = await self._resolve_call()
-            op = _op_of(query)
             if op == "check_updates":
                 # The poll doubles as the ATTRIBUTION PING: even though the op is
                 # handled at this layer, the caller still gets matched (accounts,
@@ -189,6 +211,66 @@ class VBBackend:
                         "status, say it's still pending with the partner; otherwise say "
                         "absolutely nothing about this and continue naturally.")
             return "\n".join(filter(None, [reply, drained]))
+
+    def _ensure_worker(self) -> None:
+        if self._worker_task is None or self._worker_task.done():
+            self._worker_task = asyncio.get_running_loop().create_task(
+                self._write_worker())
+
+    async def _write_worker(self) -> None:
+        """Drains the intake queue in arrival order. Each item still takes the
+        store lock so doc writes never interleave with synchronous ops."""
+        while True:
+            state, query = await self._write_queue.get()
+            try:
+                async with self._lock:
+                    await state.services.query(query)
+            except Exception:  # noqa: BLE001 - one bad item must not stop the drain
+                log.exception("queued write failed: %s", query[:200])
+            finally:
+                self._write_queue.task_done()
+
+    async def _post_call(self, query: str) -> str:
+        """VB's post-call callback: reconcile after the call so state ends in
+        good shape. Attaches by caller_phone (or the most recently closed call),
+        writes the call summary + extracted notes directly to the matched
+        account (this is our own trusted pipeline, not a voice caller), and
+        waits for the intake queue to finish draining first."""
+        try:
+            q = json.loads(query)
+        except (ValueError, TypeError):
+            return "post_call_notes needs a JSON object"
+        await self._write_queue.join()          # in-call writes land first
+        phone = str(q.get("caller_phone", "") or "").strip()
+        if not phone and self._last_closed:
+            phone = self._last_closed[1]
+        if not phone:
+            return ("no caller to attach to — include caller_phone, or call after "
+                    "a phone call has completed")
+        notes = [str(n).strip() for n in (q.get("notes") or []) if str(n).strip()]
+        summary = str(q.get("summary", "")).strip()
+        if summary:
+            notes.insert(0, f"call summary: {summary}")
+        if not notes:
+            return "nothing to file — include notes and/or summary"
+        sent: list[tuple[str, dict]] = []
+
+        async def send(action: str, payload: dict) -> None:
+            sent.append((action, payload))
+
+        async with self._lock:
+            services = self._services_factory(caller_id=phone, send=send)
+            if services.gate.matched is not None:
+                # Post-call archivist context is trusted: file straight onto the
+                # matched account instead of parking a parallel pending dossier.
+                services.gate.verified = services.gate.matched
+            await services.query(json.dumps({"op": "remember", "notes": notes}))
+            try:
+                await services.close()
+            except Exception:  # noqa: BLE001 - teardown must not fail the callback
+                log.exception("post-call services close failed")
+        log.info("post-call notes filed: %d note(s) for %s", len(notes), phone)
+        return f"filed {len(notes)} post-call note(s) for {phone}"
 
     def _drain(self, state: _CallState) -> str:
         parts = []
@@ -223,6 +305,8 @@ class VBBackend:
             # The call is over: the next query must re-resolve synchronously
             # instead of riding a stale pointer to this closed state.
             self._resolve_cache = None
+        if sid != "solo":
+            self._last_closed = (sid, state.caller_phone)   # post_call_notes target
         log.info("closing call state %s (caller=%s)", sid[:12], state.caller_phone or "?")
         try:
             await state.services.close()   # cancels watchers + posts [booking-itinerary]
@@ -280,7 +364,9 @@ TOOL_DESCRIPTION = (
     '"title":"Shinkansen from Nagoya to Osaka","details":"..."} (ONE booking item = '
     "ONE thread named by its short human title; update/canceled/booked post the "
     'status back onto that item) | '
-    '{"op":"check_updates"}. The response is authoritative guidance to act on '
+    '{"op":"check_updates"} | {"op":"post_call_notes","caller_phone":"+1...",'
+    '"summary":"...","notes":["topic: fact", "..."]} (post-call archivist only). '
+    "The response is authoritative guidance to act on "
     "immediately."
 )
 

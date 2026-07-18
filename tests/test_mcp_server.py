@@ -10,6 +10,12 @@ from voice_local import db, mcp_server
 from voice_local.mcp_server import VBBackend, _op_of
 
 
+class FakeGate:
+    def __init__(self):
+        self.matched = None
+        self.verified = None
+
+
 class FakeServices:
     def __init__(self, caller_id, send):
         self.caller_id = caller_id
@@ -17,6 +23,7 @@ class FakeServices:
         self.queries = []
         self.attributed = []
         self.closed = False
+        self.gate = FakeGate()
 
     async def query(self, query):
         self.queries.append(query)
@@ -125,6 +132,55 @@ def test_close_call_invalidates_resolve_cache():
         assert backend._resolve_cache[1] == "vb1"
         await backend._close_call("vb1")
         assert backend._resolve_cache is None and made[0].closed
+
+    asyncio.run(run())
+
+
+def test_write_ops_enqueue_and_ack_instantly():
+    """remember/caller_name enter the in-memory intake queue with an instant
+    SILENT ack; the worker drains them in order off the reply path."""
+    backend, made = make_backend(("vb1", "+16506567722"))
+
+    async def run():
+        ack1 = await backend.query('{"op":"remember","notes":["a"]}')
+        ack2 = await backend.query('{"op":"caller_name","name":"Mika"}')
+        assert ack1.startswith("SILENT") and ack2.startswith("SILENT")
+        assert made[0].queries == []              # nothing processed inline
+        await backend._write_queue.join()          # worker drains in order
+        assert made[0].queries == ['{"op":"remember","notes":["a"]}',
+                                   '{"op":"caller_name","name":"Mika"}']
+
+    asyncio.run(run())
+
+
+def test_post_call_notes_files_to_caller_by_phone():
+    backend, made = make_backend(("vb1", "+16506567722"))
+
+    async def run():
+        out = await backend.query(
+            '{"op":"post_call_notes","caller_phone":"+15551239876",'
+            '"summary":"planned Kobe trip","notes":["trip: Kobe in May"]}')
+        assert "filed 2 post-call note(s) for +15551239876" in out
+        # a fresh trusted services instance received the batched remember
+        archivist = made[-1]
+        assert archivist.caller_id == "+15551239876" and archivist.closed
+        q = json.loads(archivist.queries[0])
+        assert q["op"] == "remember"
+        assert q["notes"][0] == "call summary: planned Kobe trip"
+        assert "trip: Kobe in May" in q["notes"]
+
+    asyncio.run(run())
+
+
+def test_post_call_notes_falls_back_to_last_closed_call():
+    backend, made = make_backend(("vb1", "+16506567722"))
+
+    async def run():
+        await backend.query('{"op":"check_updates"}')   # creates vb1 state
+        await backend._close_call("vb1")
+        out = await backend.query(
+            '{"op":"post_call_notes","summary":"s","notes":["n"]}')
+        assert "+16506567722" in out
 
     asyncio.run(run())
 
