@@ -277,6 +277,45 @@ def _pending_services(conn, store, tmp_path, *, caller_id="+15550001111"):
     return svc, pending_store
 
 
+def test_call_start_attribution_names_known_account_even_with_empty_dossier(conn, store):
+    """Ask (2026-07-17): a known caller must be greeted by NAME from the first
+    ping, with everything else still behind the PIN — even before any notes
+    exist for the account."""
+    svc = _services(conn, store)                       # caller-ID = BOYAN, no notes
+    asyncio.run(svc.attribute())
+    ctx = [p for a, p in svc._test_pending if a == "caller_context"]
+    assert len(ctx) == 1
+    brief = ctx[0]["brief"]
+    assert "Boyan Lin" in brief and "greet them by NAME" in brief
+    assert "PIN verification is still required" in brief
+    # settled: a second attribute must not resend the dossier
+    asyncio.run(svc.attribute())
+    assert len([p for a, p in svc._test_pending if a == "caller_context"]) == 1
+
+
+def test_call_start_attribution_preloads_pending_notes_freely(conn, store, tmp_path):
+    """A returning caller with only a pending dossier gets last call's notebook
+    right away — no PIN gate on info they themselves gave us."""
+    pending_store = AccountStore(tmp_path / "accounts-pending")
+    parked = Account(account_number="888888", pin="", name="", phones=["+15552223333"])
+    pending_store.save(parked)
+    pending_store.append_note("888888", "dreaming of Hakone in November")
+    sent: list[tuple[str, dict]] = []
+
+    async def send(action, payload):
+        sent.append((action, payload))
+
+    svc = CallServices(conn=conn, store=store, pending_store=pending_store,
+                       caller_id="+15552223333", destination="", grok=None,
+                       fulfiller_slug=FULFILLER, space_id="sp_test", send=send)
+    asyncio.run(svc.attribute())
+    ctx = [p for a, p in sent if a == "caller_context"]
+    assert len(ctx) == 1
+    brief = ctx[0]["brief"]
+    assert "dreaming of Hakone in November" in brief
+    assert "NO account yet" in brief and "never re-ask" in brief
+
+
 def test_pre_account_note_parks_a_pending_account(conn, store, tmp_path):
     svc, pending_store = _pending_services(conn, store, tmp_path)
     q(svc, op="remember", note="loves quiet onsen mornings")

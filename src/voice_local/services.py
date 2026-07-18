@@ -162,14 +162,18 @@ class CallServices:
             preload = ""
             if self.gate.matched is not None:
                 brief = self._store.profile_brief(self.gate.matched.account_number)
-                if brief:
-                    preload = (
-                        "Caller-ID matches this returning guest — greet them by NAME "
-                        "like an old friend and use their history naturally (never "
-                        "re-ask what it answers). PIN verification is still required "
-                        "before bookings, account details, or PIN changes; if the "
-                        "voice clearly is not them, fall back to neutral hosting:\n"
-                        + brief)
+                if not brief:
+                    # Empty dossier must still surface the NAME — knowing who is
+                    # calling is the whole point of call-start attribution.
+                    brief = (f"Caller: {self.gate.matched.name or 'unknown'} "
+                             f"(account {self.gate.matched.account_number}; no notes yet)")
+                preload = (
+                    "Caller-ID matches this returning guest — greet them by NAME "
+                    "like an old friend and use their history naturally (never "
+                    "re-ask what it answers). PIN verification is still required "
+                    "before bookings, account details, or PIN changes; if the "
+                    "voice clearly is not them, fall back to neutral hosting:\n"
+                    + brief)
             elif self._pending_account is not None:
                 brief = self._pending_store.profile_brief(
                     self._pending_account.account_number)
