@@ -13,8 +13,9 @@ LABS_DEPLOY_UNIT ?= voice-local.service
 KOYUKI_AGENT_ID := 38281e63-2215-4b49-87c8-0f20d2492da3
 MAYUKI_AGENT_ID := 23559d91-cd42-4cb9-be69-e7e48a059608
 MIYUKI_AGENT_ID := b6703d1b-4fcb-4642-ab86-e6512848a4fd
+LINDA_AGENT_ID := 95dabc72-81ba-44f5-b4f2-30a953116588
 
-.PHONY: serve test start stop restart status logs tail release deploy deploy-amazon deploy-labs push-gems push-prompt push-mayuki-prompt push-miyuki-prompt meridian-setup meridian-dev meridian-check
+.PHONY: serve test start stop restart status logs tail release deploy deploy-amazon deploy-labs push-gems push-prompt push-mayuki-prompt push-miyuki-prompt push-linda-prompt meridian-setup meridian-dev meridian-check
 
 serve:
 	uv run vox-local serve
@@ -93,3 +94,14 @@ push-miyuki-prompt:
 	  diff -q - docs-miyuki-agent-prompt.txt >/dev/null \
 	  && echo "Miyuki prompt in sync with Vocal Bridge" \
 	  || { echo "WARNING: Miyuki remote prompt still differs after push"; exit 1; }
+
+# Linda is the fixed-case prober behind the outbound demo: unlike Miyuki she
+# carries the whole case in her prompt instead of reading the goal block.
+push-linda-prompt:
+	@trap 'vb agent use $(KOYUKI_AGENT_ID) >/dev/null' EXIT; \
+	  vb agent use $(LINDA_AGENT_ID) >/dev/null; \
+	  vb prompt set -f docs-linda-agent-prompt.txt; \
+	  vb prompt show 2>/dev/null | sed -n '/--- System Prompt ---/,$$p' | tail -n +2 | \
+	  diff -q - docs-linda-agent-prompt.txt >/dev/null \
+	  && echo "Linda prompt in sync with Vocal Bridge" \
+	  || { echo "WARNING: Linda remote prompt still differs after push"; exit 1; }
