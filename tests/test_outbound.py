@@ -88,9 +88,11 @@ def test_starts_parallel_threads_and_relays_each_final_turn(fake_puffo):
         {"id": "session-0456", "room_name": "room-0456", "status": "in_progress"},
     ]
     relay._vb._events = [
-        {"session_id": "session-0123", "event_type": "user_transcription",
+        # Live VB debug events carry the ROOM NAME in session_id, not the
+        # logs-API session uuid (observed 2026-07-18); both shapes must relay.
+        {"session_id": "room-0123", "event_type": "user_transcription",
          "timestamp": "1", "data": {"transcript": "Hello there"}},
-        {"session_id": "session-0123", "event_type": "agent_response",
+        {"session_id": "room-0123", "event_type": "agent_response",
          "timestamp": "2", "data": {"text": "Hi, I am Koyuki."}},
         {"session_id": "session-0456", "event_type": "user_transcription",
          "timestamp": "3", "data": {"text": "Who is this?"}},

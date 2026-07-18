@@ -174,19 +174,28 @@ class OutboundCallRelay:
             raise OutboundError("could not create every Puffo call thread; no calls were started")
         jobs = [OutboundJob(phone=phone, target=clean_target, thread_root=root, run_id=run_id)
                 for phone, root in zip(normalized, roots, strict=True)]
-        await asyncio.gather(*(self._start_job(job) for job in jobs))
+        # Dial sequentially with spacing: VB 429s concurrent bursts on
+        # /api/v1/calls, and a failed dial costs a whole recipient.
+        for index, job in enumerate(jobs):
+            if index:
+                await asyncio.sleep(2.0)
+            await self._start_job(job)
         self._ensure_poller()
         return {"ok": True, "run_id": run_id, "calls": [job.public() for job in jobs]}
 
     async def _start_job(self, job: OutboundJob) -> None:
         try:
-            result = await self._vb.start_call(job.phone, job.target)
+            result = await self._dial_with_retry(job)
             job.call_id = str(result.get("call_id") or "")
             job.room_name = str(result.get("room_name") or "")
             job.status = str(result.get("status") or "initiated")
             if not job.room_name:
                 raise OutboundError("Vocal Bridge did not return a room name")
             self._jobs[job.room_name] = job
+            # Debug events identify the call by ROOM NAME in their session_id
+            # field (not the logs-API session uuid), so relay lookup must work
+            # from the room name from the moment the dial starts.
+            self._session_jobs[job.room_name] = job
             if self._register_target is not None:
                 self._register_target(job.room_name, job.target)
             await self._puffo.send("[System] Dial initiated.", thread=job.thread_root,
@@ -195,6 +204,19 @@ class OutboundCallRelay:
             job.status = "failed"
             await self._puffo.send(f"[System] Dial failed: {self._safe_error(exc)}",
                                    thread=job.thread_root, channel=self._puffo.channel_id)
+
+    async def _dial_with_retry(self, job: OutboundJob) -> dict:
+        """Dial once, retrying only VB rate limits (429) with a short backoff."""
+        for wait in (10.0, 20.0, 0.0):
+            try:
+                return await self._vb.start_call(job.phone, job.target)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 429 or not wait:
+                    raise
+                logger.warning("dial rate-limited for %s; retrying in %.0fs",
+                               job.recipient_label, wait)
+                await asyncio.sleep(wait)
+        raise OutboundError("rate-limited")  # unreachable; loop always returns or raises
 
     @staticmethod
     def _masked(phone: str) -> str:
