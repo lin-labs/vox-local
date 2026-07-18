@@ -1,6 +1,8 @@
 # Bulk outbound-call relay API
 
-`POST /api/outbound/calls` is an operator-only API for starting a small, consented batch of outbound calls through Vocal Bridge. It creates one Puffo thread per recipient, asks the configured outbound agent (Miyuki, the outbound prober — `VB_OUTBOUND_AGENT_ID`; falls back to `VB_AGENT_ID`) to use the supplied long-form brief as the call objective, and appends completed transcription turns to the corresponding thread.
+`POST /api/outbound/calls` is an operator-only API for starting a small, consented batch of outbound calls through Vocal Bridge. It creates one Puffo thread per recipient, asks the configured outbound agent (`VB_OUTBOUND_AGENT_ID`; falls back to `VB_AGENT_ID`) to use the supplied long-form brief as the call objective, and appends completed transcription turns to the corresponding thread.
+
+Two prober agents exist. **Miyuki** reads the brief over MCP, so one agent serves any case. **Linda** (`docs-linda-agent-prompt.txt`) carries a single fixed case — a family of four, SFO to Tokyo, September 2026 — entirely in her prompt, and has no MCP connection: Vocal Bridge's outbound-call body has no field for a per-call objective, so an agent without the backend never receives the goal block. Point `VB_OUTBOUND_AGENT_ID` at Linda for a repeatable demo run where every call probes the same case; point it at Miyuki when the brief must steer the call. With Linda selected, `description`/`dos`/`donts` still bound the batch and still appear in Puffo, but do not reach the caller.
 
 This endpoint initiates real phone calls. Do not expose it to an untrusted browser or invoke it for a recipient who has not consented to be called.
 
@@ -99,7 +101,7 @@ The debug-event poller deduplicates events and polls roughly every 0.75 seconds 
 The serving process must have all of the following before the route is usable:
 
 - `VOCAL_BRIDGE_API` and `VB_AGENT_ID` for the configured Koyuki agent, with Vocal Bridge outbound calling enabled and its Debug Mode API available.
-- `VB_OUTBOUND_AGENT_ID` (optional) selects a dedicated outbound agent for these calls — currently Miyuki, the outbound prober whose prompt lives in `docs-miyuki-agent-prompt.txt` (`make push-miyuki-prompt`). Debug Mode must be enabled on that agent for transcript relay. `VB_EXTRA_AGENT_IDS` lists any additional agents sharing the MCP backend so their sessions resolve for goal delivery and caller attribution.
+- `VB_OUTBOUND_AGENT_ID` (optional) selects a dedicated outbound agent for these calls — either Miyuki, the brief-driven prober (`docs-miyuki-agent-prompt.txt`, `make push-miyuki-prompt`), or Linda, the fixed-case demo prober (`docs-linda-agent-prompt.txt`, `make push-linda-prompt`). Debug Mode must be enabled on that agent for transcript relay. `VB_EXTRA_AGENT_IDS` lists any additional agents sharing the MCP backend so their sessions resolve for goal delivery and caller attribution; Linda does not use the backend and does not belong in that list.
 - A working Puffo configuration (`PUFFO_*`) and `VOICE_LOCAL_OUTBOUND_CHANNEL_ID`, set to the private channel where the per-call threads should appear.
 - The dedicated token described above, either generated in the private state directory or injected as `VOICE_LOCAL_OUTBOUND_TOKEN`.
 
