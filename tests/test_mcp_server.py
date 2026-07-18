@@ -89,6 +89,46 @@ def test_drain_and_check_updates():
     assert made[0].queries == ['{"op":"verify","pin":"4242"}']
 
 
+def test_stale_cache_serves_now_and_refreshes_in_background(monkeypatch):
+    """After the cache goes stale, a query must NOT block on the logs API: it
+    answers from the stale (sid, phone) and a background refresh updates the
+    cache for later queries."""
+    monkeypatch.setattr(mcp_server, "RESOLVE_CACHE_S", 0.0)  # instantly stale
+    backend, made = make_backend(("vb1", "+16506567722"))
+    fetches = []
+    real_fetch = backend._fetch_current_session
+
+    async def counting_fetch():
+        fetches.append(1)
+        return ("vb2", "+15550001111") if len(fetches) > 1 else await real_fetch()
+
+    backend._fetch_current_session = counting_fetch
+
+    async def run():
+        await backend.query('{"op":"verify","pin":"1"}')      # cold: blocks, fetch #1
+        await backend.query('{"op":"search_gems"}')           # stale: serves vb1 now
+        assert "vb1" in backend._calls and "vb2" not in backend._calls
+        await backend._refresh_task                            # let the refresh land
+        assert backend._resolve_cache[1] == "vb2"
+        await backend.query('{"op":"get_gem","id":"g1"}')     # rides refreshed cache
+        assert "vb2" in backend._calls
+
+    asyncio.run(run())
+    assert len(fetches) >= 2
+
+
+def test_close_call_invalidates_resolve_cache():
+    backend, made = make_backend(("vb1", "+16506567722"))
+
+    async def run():
+        await backend.query('{"op":"verify","pin":"1"}')
+        assert backend._resolve_cache[1] == "vb1"
+        await backend._close_call("vb1")
+        assert backend._resolve_cache is None and made[0].closed
+
+    asyncio.run(run())
+
+
 def test_http_surface(tmp_path):
     from starlette.testclient import TestClient
 

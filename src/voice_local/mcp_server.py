@@ -61,6 +61,7 @@ class VBBackend:
         self._agent_id = agent_id
         self._calls: dict[str, _CallState] = {}
         self._resolve_cache: tuple[float, str, str] | None = None
+        self._refresh_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -97,10 +98,22 @@ class VBBackend:
     async def _resolve_call(self) -> _CallState:
         """The _CallState for the call in progress; retries cover logs-API lag on
         a call's first query; a MISS falls back to a shared 'solo' state (account+
-        PIN auth still works; only the silent caller-ID match is lost)."""
+        PIN auth still works; only the silent caller-ID match is lost).
+
+        Once a REAL session is known, the cache is served stale-while-revalidate:
+        the logs API costs ~2.5s a round trip, and paying it inline put that tax
+        on every spoken turn (measured 2026-07-17: 9ms of query behind 14.7s of
+        resolving). A stale hit answers now and refreshes in the background; the
+        only queries that still block are the first of a call (cache empty or
+        'solo', where serving stale would split one call's auth across two
+        states). Back-to-back calls can land a first query or two on the old
+        call's state until a refresh lands — attribution still routes by the
+        caller_phone inside the query, so notes and dossiers stay correct."""
         now = time.monotonic()
-        if self._resolve_cache and now - self._resolve_cache[0] < RESOLVE_CACHE_S:
-            _, sid, phone = self._resolve_cache
+        if self._resolve_cache and self._resolve_cache[1] != "solo":
+            ts, sid, phone = self._resolve_cache
+            if now - ts >= RESOLVE_CACHE_S:
+                self._spawn_refresh()
             return self._state_for(sid, phone)
         for attempt in range(RESOLVE_RETRIES):
             try:
@@ -115,6 +128,23 @@ class VBBackend:
             await asyncio.sleep(RESOLVE_RETRY_DELAY_S)
         log.warning("no in_progress VB session resolved — using shared 'solo' state")
         return self._state_for("solo", "")
+
+    def _spawn_refresh(self) -> None:
+        """Refresh the resolve cache off the query path; at most one in flight."""
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return
+
+        async def refresh() -> None:
+            try:
+                found = await self._fetch_current_session()
+            except Exception as exc:  # noqa: BLE001 - background refresh must never raise
+                log.warning("background session refresh failed: %r", exc)
+                return
+            if found is not None:
+                sid, phone = found
+                self._resolve_cache = (time.monotonic(), sid, phone)
+
+        self._refresh_task = asyncio.get_running_loop().create_task(refresh())
 
     def _state_for(self, sid: str, phone: str) -> _CallState:
         state = self._calls.get(sid)
@@ -189,6 +219,10 @@ class VBBackend:
         state = self._calls.pop(sid, None)
         if state is None:
             return
+        if self._resolve_cache and self._resolve_cache[1] == sid:
+            # The call is over: the next query must re-resolve synchronously
+            # instead of riding a stale pointer to this closed state.
+            self._resolve_cache = None
         log.info("closing call state %s (caller=%s)", sid[:12], state.caller_phone or "?")
         try:
             await state.services.close()   # cancels watchers + posts [booking-itinerary]
