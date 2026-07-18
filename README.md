@@ -109,10 +109,17 @@ Vocal Bridge presents it as `Authorization: Bearer`, `X-API-Key`, or a `?key=`
 query param on the MCP URL (the shape its config reliably carries). Missing
 token file = auth off. `/healthz` stays open.
 
-On labs it runs per the Lab Service Protocol: `vox-local.service`
+On labs it runs per the Lab Service Protocol: `voice-local.service`
 (Type=notify + watchdog) on `127.0.0.1:7780`, publicly exposed for Vocal Bridge
-through the `vox-local-ngrok.service` static tunnel. `make deploy` from the
-Mac, `make release` on labs.
+through the `voice-local-ngrok.service` static tunnel. `make release` restarts the
+local systemd user unit after tests pass.
+
+Deployment targets:
+
+```bash
+make deploy        # Amazon EC2: boyan@35.87.72.173, /home/boyan/Projects/vox-local, vox-local.service
+make deploy-labs   # legacy labs target: ~/Experiments/voice/vox-local, voice-local.service
+```
 
 ## The data bag is a git artifact
 

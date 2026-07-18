@@ -3,10 +3,16 @@
 SHELL := /bin/bash
 UNIT := voice-local.service
 NGROK_UNIT := voice-local-ngrok.service
+DEPLOY_HOST ?= boyan@35.87.72.173
+DEPLOY_PATH ?= /home/boyan/Projects/vox-local
+DEPLOY_UNIT ?= vox-local.service
+LABS_DEPLOY_HOST ?= labs
+LABS_DEPLOY_PATH ?= ~/Experiments/voice/vox-local
+LABS_DEPLOY_UNIT ?= voice-local.service
 KOYUKI_AGENT_ID := 38281e63-2215-4b49-87c8-0f20d2492da3
 MAYUKI_AGENT_ID := 23559d91-cd42-4cb9-be69-e7e48a059608
 
-.PHONY: serve test start stop restart status logs tail release deploy push-gems push-prompt push-mayuki-prompt meridian-setup meridian-dev meridian-check
+.PHONY: serve test start stop restart status logs tail release deploy deploy-amazon deploy-labs push-gems push-prompt push-mayuki-prompt meridian-setup meridian-dev meridian-check
 
 serve:
 	uv run vox-local serve
@@ -35,8 +41,11 @@ tail:
 release:
 	uv sync && uv run python -m pytest tests -q && systemctl --user restart $(UNIT)
 
-deploy:
-	ssh labs 'cd ~/Experiments/voice/vox-local && git pull --ff-only && make release'
+deploy deploy-amazon:
+	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && git pull --ff-only && make release UNIT=$(DEPLOY_UNIT)'
+
+deploy-labs:
+	ssh $(LABS_DEPLOY_HOST) 'cd $(LABS_DEPLOY_PATH) && git pull --ff-only && make release UNIT=$(LABS_DEPLOY_UNIT)'
 
 push-gems:
 	git add data/gems.db && git commit -m "gems: data bag update" && git push
