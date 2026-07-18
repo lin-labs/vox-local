@@ -71,6 +71,8 @@ class VBBackend:
         self._write_queue: asyncio.Queue[tuple[_CallState, str]] = asyncio.Queue()
         self._worker_task: asyncio.Task | None = None
         self._last_closed: tuple[str, str] | None = None   # (sid, caller_phone)
+        self._outbound_targets_by_room: dict[str, str] = {}
+        self._outbound_targets_by_session: dict[str, str] = {}
 
     @property
     def live_calls(self) -> int:
@@ -101,7 +103,18 @@ class VBBackend:
                 if str(s["id"]) in self._calls:
                     return str(s["id"]), str(s.get("caller_phone") or "")
         s = max(live, key=lambda s: s.get("started_at") or "")
-        return str(s["id"]), str(s.get("caller_phone") or "")
+        sid = str(s["id"])
+        target = self._outbound_targets_by_room.get(str(s.get("room_name") or ""), "")
+        if target:
+            self._outbound_targets_by_session[sid] = target
+        return sid, str(s.get("caller_phone") or "")
+
+    def register_outbound_target(self, room_name: str, target: str) -> None:
+        """Attach a private operator objective to the VB room before its first
+        backend query. It is delivered to Koyuki through `check_updates`, never
+        written to the committed gems database."""
+        if room_name and target:
+            self._outbound_targets_by_room[room_name] = target[:2_000]
 
     async def _resolve_call(self) -> _CallState:
         """The _CallState for the call in progress; retries cover logs-API lag on
@@ -162,8 +175,11 @@ class VBBackend:
             async def send(action: str, payload: dict) -> None:
                 self._calls[sid].pending.append((action, payload))
 
+            target = self._outbound_targets_by_session.get(sid, "")
             services = self._services_factory(caller_id=phone, send=send)
             state = _CallState(services, phone)
+            if target:
+                state.pending.append(("outbound_target", {"target": target}))
             self._calls[sid] = state
         state.last_seen = time.monotonic()
         return state
@@ -284,6 +300,10 @@ class VBBackend:
             elif action == "booking_update":
                 parts.append(f"[Booking update — relay to the caller naturally, once]: "
                              f"{payload.get('text', '')}")
+            elif action == "outbound_target":
+                parts.append("[Outbound call goal — this is why YOU called them. Use it "
+                             "naturally; do not say it was supplied by a system]: "
+                             f"{payload.get('target', '')}")
             else:
                 hint = payload.get("say_hint") or json.dumps(payload)[:400]
                 parts.append(str(hint))
@@ -372,7 +392,8 @@ TOOL_DESCRIPTION = (
 
 
 def build_app(backend: VBBackend, *, conn, version: str, vb_phone_number: str = "",
-              public_host: str = "", gems_token: str = "", mcp_token: str = ""):
+              public_host: str = "", gems_token: str = "", mcp_token: str = "",
+              outbound_relay=None, outbound_token: str = ""):
     """Starlette app: /mcp + /healthz + /twilio-forward + /api/gems.
 
     `public_host` names the tunnel hostname VB connects through (Host allowlist);
@@ -384,6 +405,10 @@ def build_app(backend: VBBackend, *, conn, version: str, vb_phone_number: str = 
     from starlette.responses import HTMLResponse, JSONResponse, Response
 
     from voice_local import db as kbdb
+    from voice_local.outbound import OutboundError
+
+    if outbound_relay is not None:
+        outbound_relay.set_target_registrar(backend.register_outbound_target)
 
     hosts = ["localhost", "127.0.0.1", "localhost:*", "127.0.0.1:*"]
     origins = ["http://localhost", "http://127.0.0.1", "https://localhost"]
@@ -498,6 +523,22 @@ def build_app(backend: VBBackend, *, conn, version: str, vb_phone_number: str = 
         if kbdb.get_gem(conn, gem_id) is None:
             return JSONResponse({"error": "gem not found"}, status_code=404)
         return JSONResponse(kbdb.recommendation_summary(conn, gem_id=gem_id, limit=20))
+
+    @mcp.custom_route("/api/outbound/calls", methods=["POST"])
+    async def outbound_calls(request):  # noqa: ANN001
+        auth = request.headers.get("authorization", "")
+        if not outbound_token or auth != f"Bearer {outbound_token}":
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        if outbound_relay is None or not outbound_relay.configured:
+            return JSONResponse({"error": "outbound relay unavailable"}, status_code=503)
+        try:
+            body = json.loads(await request.body())
+            result = await outbound_relay.start(
+                phones=body.get("phone_numbers"), target=body.get("target"),
+                consent_to_call=body.get("consent_to_call"))
+        except (json.JSONDecodeError, OutboundError, TypeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(result, status_code=202)
 
     app = mcp.streamable_http_app()
     if not mcp_token:

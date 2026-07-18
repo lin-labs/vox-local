@@ -22,6 +22,7 @@ import asyncio
 import importlib.metadata
 import logging
 import os
+import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -51,11 +52,28 @@ def _state_dir() -> Path:
                                Path.home() / "data/Projects/vox-local"))
 
 
+def _outbound_token() -> str:
+    """A dedicated operator token, persisted privately outside the repository."""
+    supplied = os.environ.get("VOICE_LOCAL_OUTBOUND_TOKEN", "").strip()
+    if supplied:
+        return supplied
+    token_file = _state_dir() / "outbound-bearer-token"
+    if token_file.exists():
+        return token_file.read_text().strip()
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(32)
+    token_file.write_text(token + "\n")
+    token_file.chmod(0o600)
+    log.warning("created outbound API token at %s", token_file)
+    return token
+
+
 async def _run_serve(args) -> int:
     import uvicorn
 
     from voice_local.accounts import AccountStore
     from voice_local.mcp_server import VBBackend, build_app, watchdog_task
+    from voice_local.outbound import OutboundCallRelay, VocalBridgeCalls
     from voice_local.puffo import PuffoClient, PuffoListener, resolve_puffo_bin
     from voice_local.services import CallServices
 
@@ -70,6 +88,7 @@ async def _run_serve(args) -> int:
     destination = os.environ.get("VOICE_LOCAL_DESTINATION", "kobe").lower()
 
     puffo = None
+    puffo_client = None
     listener = None
     puffo_bin = resolve_puffo_bin(os.environ.get("PUFFO_BIN", ""))
     if puffo_bin:
@@ -81,6 +100,7 @@ async def _run_serve(args) -> int:
         listener = PuffoListener(client)
         listener.start()
         puffo = (client, listener)
+        puffo_client = client
 
     grok = None
     if os.environ.get("XAI_API_KEY"):
@@ -103,6 +123,17 @@ async def _run_serve(args) -> int:
 
     backend = VBBackend(services_factory=services_factory, api_key=api_key,
                         agent_id=os.environ.get("VB_AGENT_ID", ""))
+    outbound_relay = None
+    outbound_channel = os.environ.get("VOICE_LOCAL_OUTBOUND_CHANNEL_ID", "").strip()
+    outbound_token = _outbound_token()
+    if puffo_client is not None and outbound_channel and outbound_token:
+        outbound_puffo = PuffoClient(
+            bin=puffo_client.bin, server_url=puffo_client.server_url,
+            channel_id=outbound_channel, identity=puffo_client.identity,
+            space_id=puffo_client.space_id)
+        outbound_relay = OutboundCallRelay(
+            puffo=outbound_puffo,
+            vb=VocalBridgeCalls(api_key=api_key, agent_id=os.environ.get("VB_AGENT_ID", "")))
     try:
         version = importlib.metadata.version("vox-local")
     except importlib.metadata.PackageNotFoundError:
@@ -117,7 +148,8 @@ async def _run_serve(args) -> int:
                     vb_phone_number=os.environ.get("VB_PHONE_NUMBER", ""),
                     public_host=public_host,
                     gems_token=os.environ.get("VOICE_LOCAL_GEMS_TOKEN", ""),
-                    mcp_token=mcp_token)
+                    mcp_token=mcp_token, outbound_relay=outbound_relay,
+                    outbound_token=outbound_token)
 
     n_gems = conn.execute("SELECT count(*) FROM gems").fetchone()[0]
     print(f"  vox-local: 127.0.0.1:{port}/mcp  (gems: {n_gems}, "

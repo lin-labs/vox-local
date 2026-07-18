@@ -43,6 +43,23 @@ class FakeServices:
         self.closed = True
 
 
+class FakeOutboundRelay:
+    configured = True
+
+    def __init__(self):
+        self.registrar = None
+        self.calls = []
+
+    def set_target_registrar(self, registrar):
+        self.registrar = registrar
+
+    async def start(self, *, phones, target, consent_to_call):
+        self.calls.append((phones, target, consent_to_call))
+        return {"ok": True, "run_id": "out_test", "calls": [
+            {"recipient": "Recipient ending 0123", "thread_root": "msg_1",
+             "call_id": "call_1", "status": "initiated"}]}
+
+
 def make_backend(session):
     made = []
 
@@ -94,6 +111,14 @@ def test_drain_and_check_updates():
     assert "SILENT" in empty
     assert "table booked 7pm" in got and "[Booking update" in got
     assert made[0].queries == ['{"op":"verify","pin":"4242"}']
+
+
+def test_outbound_target_reaches_first_check_updates():
+    backend, made = make_backend(("s1", ""))
+    backend._outbound_targets_by_session["s1"] = "Invite them to discuss a quiet Japan trip."
+    got = asyncio.run(backend.query('{"op":"check_updates"}'))
+    assert "[Outbound call goal" in got
+    assert len(made) == 1
 
 
 def test_stale_cache_serves_now_and_refreshes_in_background(monkeypatch):
@@ -233,6 +258,25 @@ def test_creator_portal_and_api(tmp_path):
         })
         assert created.status_code == 200 and created.json()["gem"]["source"] == "curator"
         assert client.get(f"/api/creator/gems/{seed['id']}/events").json()["total"] == 1
+
+
+def test_outbound_call_api_requires_dedicated_auth_and_consent(tmp_path):
+    from starlette.testclient import TestClient
+
+    conn = db.connect(tmp_path / "bag.db")
+    backend, _ = make_backend(None)
+    relay = FakeOutboundRelay()
+    app = mcp_server.build_app(backend, conn=conn, version="test", outbound_relay=relay,
+                               outbound_token="outbound-secret")
+    body = {"phone_numbers": ["+16505550123"], "target": "Call about a Japan trip.",
+            "consent_to_call": True}
+    with TestClient(app) as client:
+        assert client.post("/api/outbound/calls", json=body).status_code == 401
+        response = client.post("/api/outbound/calls",
+                               headers={"Authorization": "Bearer outbound-secret"}, json=body)
+    assert response.status_code == 202
+    assert relay.calls == [(body["phone_numbers"], body["target"], True)]
+    assert relay.registrar == backend.register_outbound_target
 
 
 def test_mcp_token_gate(tmp_path):
