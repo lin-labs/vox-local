@@ -4,7 +4,7 @@ SHELL := /bin/bash
 UNIT := voice-local.service
 NGROK_UNIT := voice-local-ngrok.service
 KOYUKI_AGENT_ID := 38281e63-2215-4b49-87c8-0f20d2492da3
-MAYUKI_AGENT_ID := 1daf031d-0a6f-4400-8685-990fb1c8ce89
+MAYUKI_AGENT_ID := 23559d91-cd42-4cb9-be69-e7e48a059608
 
 .PHONY: serve test start stop restart status logs tail release deploy push-gems push-prompt push-mayuki-prompt
 
