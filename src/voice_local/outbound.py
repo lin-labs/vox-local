@@ -28,7 +28,7 @@ class OutboundError(ValueError):
 
 
 class VBCalls(Protocol):
-    async def start_call(self, phone: str, target: str) -> dict: ...
+    async def start_call(self, phone: str, brief: str) -> dict: ...
     async def debug_events(self, since: str) -> tuple[list[dict], str]: ...
     async def sessions(self) -> list[dict]: ...
 
@@ -39,7 +39,7 @@ class VocalBridgeCalls:
     def __init__(self, *, api_key: str, agent_id: str) -> None:
         self._headers = {"X-API-Key": api_key, "X-Agent-Id": agent_id}
 
-    async def start_call(self, phone: str, target: str) -> dict:
+    async def start_call(self, phone: str, brief: str) -> dict:
         # VB currently documents phone_number and participant_name for outbound
         # calls. The target reaches Koyuki via the per-session backend context,
         # not an undocumented outbound-call body field.
@@ -111,7 +111,9 @@ class OutboundCallRelay:
         self._register_target = register
 
     @staticmethod
-    def validate(*, phones: object, target: object, consent_to_call: object) -> tuple[list[str], str]:
+    def validate(*, phones: object, target: object, description: object,
+                 dos: object, donts: object, agent_fit: object,
+                 consent_to_call: object) -> tuple[list[str], str]:
         if consent_to_call is not True:
             raise OutboundError("consent_to_call must be true")
         if not isinstance(phones, list) or not 1 <= len(phones) <= 5:
@@ -121,17 +123,40 @@ class OutboundCallRelay:
             raise OutboundError("phone_numbers must use E.164 format")
         if len(set(normalized)) != len(normalized):
             raise OutboundError("phone_numbers must be unique")
-        clean_target = str(target or "").strip()
-        if not 10 <= len(clean_target) <= 2_000:
-            raise OutboundError("target must be between 10 and 2000 characters")
-        return normalized, clean_target
+        primary = str(description or target or "").strip()
+        if not 10 <= len(primary) <= 12_000:
+            raise OutboundError("description (or target) must be between 10 and 12000 characters")
 
-    async def start(self, *, phones: object, target: object,
+        def list_items(value: object, field: str) -> list[str]:
+            if value is None:
+                return []
+            if not isinstance(value, list) or len(value) > 20:
+                raise OutboundError(f"{field} must be a list of at most 20 items")
+            items = [str(item).strip() for item in value]
+            if any(not item or len(item) > 500 for item in items):
+                raise OutboundError(f"{field} items must be non-empty and at most 500 characters")
+            return items
+
+        clean_fit = str(agent_fit or "").strip()
+        if len(clean_fit) > 2_000:
+            raise OutboundError("agent_fit must be at most 2000 characters")
+        sections = ["[Outbound call brief]", primary]
+        if clean_fit:
+            sections += ["\n[Agent fit]", clean_fit]
+        for heading, items in (("Do", list_items(dos, "dos")),
+                               ("Don't", list_items(donts, "donts"))):
+            if items:
+                sections += [f"\n[{heading}]", *[f"- {item}" for item in items]]
+        return normalized, "\n".join(sections)
+
+    async def start(self, *, phones: object, target: object = "", description: object = "",
+                    dos: object = None, donts: object = None, agent_fit: object = "",
                     consent_to_call: object) -> dict:
         if not self.configured:
             raise OutboundError("outbound relay is not configured")
         normalized, clean_target = self.validate(
-            phones=phones, target=target, consent_to_call=consent_to_call)
+            phones=phones, target=target, description=description, dos=dos, donts=donts,
+            agent_fit=agent_fit, consent_to_call=consent_to_call)
         run_id = f"out_{uuid4().hex}"
         # Roots are created before any dial starts: every result has a durable
         # operator thread, including a provider failure before pickup.

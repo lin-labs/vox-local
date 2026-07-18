@@ -80,8 +80,8 @@ def test_starts_parallel_threads_and_relays_each_final_turn(fake_puffo):
     assert all("+1650" not in str(call) for call in result["calls"])
     assert len(relay._vb.calls) == 2
     assert registered == {
-        "room-0123": "Invite them to discuss a quiet Japan trip.",
-        "room-0456": "Invite them to discuss a quiet Japan trip.",
+        "room-0123": "[Outbound call brief]\nInvite them to discuss a quiet Japan trip.",
+        "room-0456": "[Outbound call brief]\nInvite them to discuss a quiet Japan trip.",
     }
     relay._vb._sessions = [
         {"id": "session-0123", "room_name": "room-0123", "status": "in_progress"},
@@ -103,3 +103,18 @@ def test_starts_parallel_threads_and_relays_each_final_turn(fake_puffo):
     assert "[Agent] Hi, I am Koyuki." in all_text
     assert "[User] Who is this?" in all_text
     assert all_text.count("[User] Hello there") == 1
+
+
+def test_long_form_brief_with_guidance_is_posted_in_full(fake_puffo):
+    relay = _relay(fake_puffo)
+    description = "A" * 11_500
+    asyncio.run(relay.start(
+        phones=["+16505550123"], description=description,
+        dos=["Ask open questions", "Offer practical next steps"],
+        donts=["Do not pressure the recipient"],
+        agent_fit="A patient travel concierge is the best fit.", consent_to_call=True))
+    sent = _sent(fake_puffo)
+    root_text = next(call[call.index("send") + 1] for call in sent if "send" in call)
+    assert description in root_text
+    assert "[Agent fit]" in root_text
+    assert "[Do]" in root_text and "[Don't]" in root_text

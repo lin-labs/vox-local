@@ -53,8 +53,8 @@ class FakeOutboundRelay:
     def set_target_registrar(self, registrar):
         self.registrar = registrar
 
-    async def start(self, *, phones, target, consent_to_call):
-        self.calls.append((phones, target, consent_to_call))
+    async def start(self, **kwargs):
+        self.calls.append(kwargs)
         return {"ok": True, "run_id": "out_test", "calls": [
             {"recipient": "Recipient ending 0123", "thread_root": "msg_1",
              "call_id": "call_1", "status": "initiated"}]}
@@ -268,14 +268,18 @@ def test_outbound_call_api_requires_dedicated_auth_and_consent(tmp_path):
     relay = FakeOutboundRelay()
     app = mcp_server.build_app(backend, conn=conn, version="test", outbound_relay=relay,
                                outbound_token="outbound-secret")
-    body = {"phone_numbers": ["+16505550123"], "target": "Call about a Japan trip.",
-            "consent_to_call": True}
+    body = {"phone_numbers": ["+16505550123"], "description": "Call about a Japan trip.",
+            "dos": ["Be warm"], "donts": ["Do not pressure them"],
+            "agent_fit": "Use Koyuki's thoughtful local-guide voice.", "consent_to_call": True}
     with TestClient(app) as client:
         assert client.post("/api/outbound/calls", json=body).status_code == 401
         response = client.post("/api/outbound/calls",
                                headers={"Authorization": "Bearer outbound-secret"}, json=body)
     assert response.status_code == 202
-    assert relay.calls == [(body["phone_numbers"], body["target"], True)]
+    assert relay.calls == [{"phones": body["phone_numbers"], "target": None,
+                            "description": body["description"], "dos": body["dos"],
+                            "donts": body["donts"], "agent_fit": body["agent_fit"],
+                            "consent_to_call": True}]
     assert relay.registrar == backend.register_outbound_target
 
 

@@ -114,7 +114,7 @@ class VBBackend:
         backend query. It is delivered to Koyuki through `check_updates`, never
         written to the committed gems database."""
         if room_name and target:
-            self._outbound_targets_by_room[room_name] = target[:2_000]
+            self._outbound_targets_by_room[room_name] = target[:12_000]
 
     async def _resolve_call(self) -> _CallState:
         """The _CallState for the call in progress; retries cover logs-API lag on
@@ -535,6 +535,8 @@ def build_app(backend: VBBackend, *, conn, version: str, vb_phone_number: str = 
             body = json.loads(await request.body())
             result = await outbound_relay.start(
                 phones=body.get("phone_numbers"), target=body.get("target"),
+                description=body.get("description"), dos=body.get("dos"),
+                donts=body.get("donts"), agent_fit=body.get("agent_fit"),
                 consent_to_call=body.get("consent_to_call"))
         except (json.JSONDecodeError, OutboundError, TypeError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
