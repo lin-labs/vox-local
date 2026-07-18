@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import json
+import logging
 import re
 import time
 from typing import Awaitable, Callable, Protocol
@@ -21,6 +22,7 @@ from voice_local.puffo import PuffoClient
 
 VB_API_BASE = "https://vocalbridgeai.com"
 _PHONE_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+logger = logging.getLogger(__name__)
 
 
 class OutboundError(ValueError):
@@ -63,8 +65,10 @@ class VocalBridgeCalls:
         return list(body.get("events") or []), str(body.get("last_timestamp") or since)
 
     async def sessions(self) -> list[dict]:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{VB_API_BASE}/api/v1/logs?limit=100",
+        # VB's logs endpoint is slow enough to blow a 10s read timeout at
+        # limit=100; a small page is all the relay needs to match active jobs.
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(f"{VB_API_BASE}/api/v1/logs?limit=25",
                                         headers=self._headers)
             response.raise_for_status()
             return list(response.json().get("sessions") or [])
@@ -205,12 +209,22 @@ class OutboundCallRelay:
             self._poller = asyncio.create_task(self._poll_loop())
 
     async def _poll_loop(self) -> None:
+        failures = 0
         while self._jobs:
             try:
                 await self.poll_once()
-            except Exception:  # noqa: BLE001 - a transient debug API failure must not kill relay
+            except Exception as exc:  # noqa: BLE001 - a transient debug API failure must not kill relay
+                failures += 1
+                # A persistent failure must be visible: an unlogged retry loop
+                # looks identical to a healthy relay from the journal.
+                if failures == 1 or failures % 15 == 0:
+                    logger.warning("outbound relay poll failed (%d in a row): %r",
+                                   failures, self._safe_error(exc))
                 await asyncio.sleep(2.0)
             else:
+                if failures:
+                    logger.info("outbound relay poll recovered after %d failures", failures)
+                failures = 0
                 await asyncio.sleep(0.75)
 
     async def poll_once(self) -> None:

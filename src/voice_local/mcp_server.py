@@ -60,10 +60,16 @@ class VBBackend:
     """Session registry + query entry for the MCP tool. `services_factory`
     builds a CallServices given (caller_id, send)."""
 
-    def __init__(self, *, services_factory, api_key: str, agent_id: str) -> None:
+    def __init__(self, *, services_factory, api_key: str, agent_id: str,
+                 extra_agent_ids: list[str] | None = None) -> None:
         self._services_factory = services_factory
         self._api_key = api_key
         self._agent_id = agent_id
+        # All VB agents sharing this backend (concierge + phone pitch agent +
+        # outbound prober): session resolution must see every agent's calls,
+        # not only the primary concierge's.
+        self._agent_ids = [agent_id] + [a for a in (extra_agent_ids or [])
+                                        if a and a != agent_id]
         self._calls: dict[str, _CallState] = {}
         self._resolve_cache: tuple[float, str, str] | None = None
         self._refresh_task: asyncio.Task | None = None
@@ -78,19 +84,26 @@ class VBBackend:
     def live_calls(self) -> int:
         return len(self._calls)
 
-    def _vb_headers(self) -> dict:
+    def _vb_headers(self, agent_id: str = "") -> dict:
         headers = {"X-API-Key": self._api_key}
-        if self._agent_id:
-            headers["X-Agent-Id"] = self._agent_id
+        chosen = agent_id or self._agent_id
+        if chosen:
+            headers["X-Agent-Id"] = chosen
         return headers
 
     async def _fetch_current_session(self) -> tuple[str, str] | None:
-        """Newest in_progress VB session -> (session_id, caller_phone)."""
+        """Newest in_progress VB session across all backend agents ->
+        (session_id, caller_phone)."""
         async with httpx.AsyncClient(timeout=8.0) as http:
-            resp = await http.get(f"{VB_API_BASE}/api/v1/logs?limit=5",
-                                  headers=self._vb_headers())
-            resp.raise_for_status()
-            sessions = resp.json().get("sessions", [])
+            responses = await asyncio.gather(*[
+                http.get(f"{VB_API_BASE}/api/v1/logs?limit=5",
+                         headers=self._vb_headers(agent))
+                for agent in (self._agent_ids or [""])
+            ])
+            sessions = []
+            for resp in responses:
+                resp.raise_for_status()
+                sessions.extend(resp.json().get("sessions", []))
         live = [s for s in sessions if s.get("status") == "in_progress"]
         if not live:
             return None

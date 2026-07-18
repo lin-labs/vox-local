@@ -121,8 +121,14 @@ async def _run_serve(args) -> int:
                             space_id=os.environ.get("PUFFO_SPACE_ID", ""),
                             channel_invites=channel_invites, send=send)
 
+    extra_agents = [a.strip() for a in
+                    os.environ.get("VB_EXTRA_AGENT_IDS", "").split(",") if a.strip()]
+    outbound_agent_env = os.environ.get("VB_OUTBOUND_AGENT_ID", "").strip()
+    if outbound_agent_env:
+        extra_agents.append(outbound_agent_env)
     backend = VBBackend(services_factory=services_factory, api_key=api_key,
-                        agent_id=os.environ.get("VB_AGENT_ID", ""))
+                        agent_id=os.environ.get("VB_AGENT_ID", ""),
+                        extra_agent_ids=extra_agents)
     outbound_relay = None
     outbound_channel = os.environ.get("VOICE_LOCAL_OUTBOUND_CHANNEL_ID", "").strip()
     outbound_token = _outbound_token()
@@ -131,9 +137,12 @@ async def _run_serve(args) -> int:
             bin=puffo_client.bin, server_url=puffo_client.server_url,
             channel_id=outbound_channel, identity=puffo_client.identity,
             space_id=puffo_client.space_id)
+        # Outbound calls may run as a dedicated prober agent; inbound identity
+        # (VB_AGENT_ID) stays the concierge.
+        outbound_agent = outbound_agent_env or os.environ.get("VB_AGENT_ID", "")
         outbound_relay = OutboundCallRelay(
             puffo=outbound_puffo,
-            vb=VocalBridgeCalls(api_key=api_key, agent_id=os.environ.get("VB_AGENT_ID", "")))
+            vb=VocalBridgeCalls(api_key=api_key, agent_id=outbound_agent))
     try:
         version = importlib.metadata.version("vox-local")
     except importlib.metadata.PackageNotFoundError:

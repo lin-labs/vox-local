@@ -12,8 +12,9 @@ LABS_DEPLOY_PATH ?= ~/Experiments/voice/vox-local
 LABS_DEPLOY_UNIT ?= voice-local.service
 KOYUKI_AGENT_ID := 38281e63-2215-4b49-87c8-0f20d2492da3
 MAYUKI_AGENT_ID := 23559d91-cd42-4cb9-be69-e7e48a059608
+MIYUKI_AGENT_ID := b6703d1b-4fcb-4642-ab86-e6512848a4fd
 
-.PHONY: serve test start stop restart status logs tail release deploy deploy-amazon deploy-labs push-gems push-prompt push-mayuki-prompt meridian-setup meridian-dev meridian-check
+.PHONY: serve test start stop restart status logs tail release deploy deploy-amazon deploy-labs push-gems push-prompt push-mayuki-prompt push-miyuki-prompt meridian-setup meridian-dev meridian-check
 
 serve:
 	uv run vox-local serve
@@ -81,3 +82,14 @@ push-mayuki-prompt:
 	  diff -q - docs-mayuki-agent-prompt.txt >/dev/null \
 	  && echo "Mayuki prompt in sync with Vocal Bridge" \
 	  || { echo "WARNING: Mayuki remote prompt still differs after push"; exit 1; }
+
+# Miyuki is the outbound prober agent used by /api/outbound/calls
+# (VB_OUTBOUND_AGENT_ID). Same select-push-restore pattern as Mayuki.
+push-miyuki-prompt:
+	@trap 'vb agent use $(KOYUKI_AGENT_ID) >/dev/null' EXIT; \
+	  vb agent use $(MIYUKI_AGENT_ID) >/dev/null; \
+	  vb prompt set -f docs-miyuki-agent-prompt.txt; \
+	  vb prompt show 2>/dev/null | sed -n '/--- System Prompt ---/,$$p' | tail -n +2 | \
+	  diff -q - docs-miyuki-agent-prompt.txt >/dev/null \
+	  && echo "Miyuki prompt in sync with Vocal Bridge" \
+	  || { echo "WARNING: Miyuki remote prompt still differs after push"; exit 1; }
