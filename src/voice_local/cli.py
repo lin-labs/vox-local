@@ -23,6 +23,7 @@ import importlib.metadata
 import logging
 import os
 import secrets
+import socket
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -50,6 +51,20 @@ def _db_path() -> Path:
 def _state_dir() -> Path:
     return Path(os.environ.get("VOICE_LOCAL_STATE",
                                Path.home() / "data/Projects/vox-local"))
+
+
+def _pick_port(preferred: int, attempts: int = 20) -> int:
+    """The preferred port if free, else the next free port after it."""
+    for port in range(preferred, preferred + attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+        if port != preferred:
+            log.warning("port %d in use, falling back to %d", preferred, port)
+        return port
+    raise SystemExit(f"no free port in {preferred}-{preferred + attempts - 1}")
 
 
 def _outbound_token() -> str:
@@ -81,7 +96,7 @@ async def _run_serve(args) -> int:
     if not api_key:
         raise SystemExit("VOCAL_BRIDGE_API not set — needed to resolve in-progress VB "
                          "sessions (caller identity).")
-    port = int(os.environ.get("VOICE_LOCAL_PORT", "7780"))
+    port = _pick_port(int(os.environ.get("VOICE_LOCAL_PORT", "7780")))
     conn = kbdb.connect(_db_path())
     store = AccountStore(_state_dir() / "accounts")
     pending_store = AccountStore(_state_dir() / "accounts-pending")
