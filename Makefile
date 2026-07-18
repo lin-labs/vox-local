@@ -3,8 +3,10 @@
 SHELL := /bin/bash
 UNIT := voice-local.service
 NGROK_UNIT := voice-local-ngrok.service
+KOYUKI_AGENT_ID := 38281e63-2215-4b49-87c8-0f20d2492da3
+MAYUKI_AGENT_ID := 1daf031d-0a6f-4400-8685-990fb1c8ce89
 
-.PHONY: serve test start stop restart status logs tail release deploy push-gems push-prompt
+.PHONY: serve test start stop restart status logs tail release deploy push-gems push-prompt push-mayuki-prompt
 
 serve:
 	uv run vox-local serve
@@ -47,3 +49,14 @@ push-prompt:
 	  diff -q - docs-agent-prompt.txt >/dev/null \
 	  && echo "prompt in sync with Vocal Bridge" \
 	  || { echo "WARNING: remote prompt still differs after push"; exit 1; }
+
+# Mayuki is a separate VB agent. This target intentionally selects her only for
+# the duration of the push, then restores Koyuki as the CLI default.
+push-mayuki-prompt:
+	@trap 'vb agent use $(KOYUKI_AGENT_ID) >/dev/null' EXIT; \
+	  vb agent use $(MAYUKI_AGENT_ID) >/dev/null; \
+	  vb prompt set -f docs-mayuki-agent-prompt.txt; \
+	  vb prompt show 2>/dev/null | sed -n '/--- System Prompt ---/,$$p' | tail -n +2 | \
+	  diff -q - docs-mayuki-agent-prompt.txt >/dev/null \
+	  && echo "Mayuki prompt in sync with Vocal Bridge" \
+	  || { echo "WARNING: Mayuki remote prompt still differs after push"; exit 1; }
